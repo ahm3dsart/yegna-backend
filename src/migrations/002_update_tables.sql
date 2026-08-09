@@ -1,8 +1,6 @@
 -- Skip categories since they already exist
 -- Use INSERT IGNORE to avoid duplicates
 
-USE yegna_db;
-
 -- Add missing columns to users
 ALTER TABLE users ADD COLUMN IF NOT EXISTS phone VARCHAR(20) DEFAULT NULL;
 ALTER TABLE users ADD COLUMN IF NOT EXISTS bio TEXT DEFAULT NULL;

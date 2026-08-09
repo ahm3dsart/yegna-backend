@@ -12,7 +12,6 @@ const socialRoutes        = require('./routes/socialRoutes');
 const ownerRoutes         = require('./routes/ownerRoutes');
 
 const app = express();
-const PORT = process.env.PORT || 5000;
 
 // Middleware
 app.use(cors({
@@ -28,7 +27,13 @@ app.use('/uploads', express.static(path.join(__dirname, '../uploads')));
 
 // Routes
 app.use('/api/businesses', businessRoutes);
-app.use('/api/auth', authRoutes);
+try {
+  app.use('/api/auth', authRoutes);
+  console.log('✅ authRoutes loaded');
+} catch (e) {
+  console.error('❌ authRoutes FAILED:', e.message);
+  app.use('/api/auth', (req, res) => res.status(500).json({ success: false, message: 'Auth service error: ' + e.message }));
+}
 app.use('/api/user', userRoutes);
 app.use('/api/search', searchRoutes);
 app.use('/api/notifications', notificationRoutes);
@@ -74,25 +79,14 @@ app.use((req, res) => {
   res.status(404).json({ success: false, message: 'Route not found' });
 });
 
-app.listen(PORT, '0.0.0.0', () => {
-  console.log(`\n🚀 Yegna API Server running on http://0.0.0.0:${PORT}`);
-  console.log(`📊 Environment: ${process.env.NODE_ENV || 'development'}`);
-  console.log('\n📋 Available Endpoints:');
-  console.log('   POST  /api/auth/register');
-  console.log('   POST  /api/auth/login');
-  console.log('   GET   /api/auth/me');
-  console.log('   GET   /api/businesses');
-  console.log('   GET   /api/businesses/nearby');
-  console.log('   GET   /api/businesses/search');
-  console.log('   GET   /api/businesses/trending');
-  console.log('   GET   /api/businesses/top-rated');
-  console.log('   GET   /api/businesses/recently-added');
-  console.log('   GET   /api/businesses/:id');
-  console.log('   GET   /api/businesses/:id/reviews');
-  console.log('   POST  /api/businesses/:id/reviews');
-  console.log('   POST  /api/businesses/favorite');
-  console.log('   GET   /api/user/profile');
-  console.log('   GET   /api/search');
-  console.log('   GET   /api/notifications');
-  console.log('   GET   /api/health');
-});
+// Export for Phusion Passenger (Plesk) — Passenger calls the app directly
+// app.listen() is only used when running locally with `node src/server.js`
+if (require.main === module) {
+  const PORT = process.env.PORT || 5000;
+  app.listen(PORT, '0.0.0.0', () => {
+    console.log(`\n🚀 Yegna API Server running on http://0.0.0.0:${PORT}`);
+    console.log(`📊 Environment: ${process.env.NODE_ENV || 'development'}`);
+  });
+}
+
+module.exports = app;

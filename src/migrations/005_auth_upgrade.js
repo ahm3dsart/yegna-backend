@@ -4,10 +4,12 @@ require('dotenv').config();
 async function run() {
   const conn = await mysql.createConnection({
     host: process.env.DB_HOST || '127.0.0.1',
+    port: parseInt(process.env.DB_PORT || '3306', 10),
     user: process.env.DB_USER || 'root',
     password: process.env.DB_PASSWORD || '',
-    database: process.env.DB_NAME || 'yegna_db',
+    database: process.env.DB_NAME || 'yegna',
     multipleStatements: true,
+    connectTimeout: 30000,
   });
 
   const statements = [

@@ -1,6 +1,5 @@
--- Create database
-CREATE DATABASE IF NOT EXISTS yegna_db;
-USE yegna_db;
+-- Database already exists (managed externally)
+-- USE statement handled by migration runner
 
 -- Users table
 CREATE TABLE IF NOT EXISTS users (

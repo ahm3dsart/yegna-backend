@@ -1,5 +1,3 @@
-USE yegna_db;
-
 -- ── Follows (one-way, mutual = friends) ─────────────────────────────────────
 CREATE TABLE IF NOT EXISTS follows (
   id            INT PRIMARY KEY AUTO_INCREMENT,
