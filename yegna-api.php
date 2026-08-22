@@ -31,10 +31,15 @@ function db(): PDO {
     static $pdo = null;
     if ($pdo) return $pdo;
     try {
+        // Use same DSN format as VerifyPay which works on this server
         $pdo = new PDO(
             'mysql:host=' . DB_HOST . ';port=' . DB_PORT . ';dbname=' . DB_NAME . ';charset=utf8mb4',
             DB_USER, DB_PASS,
-            [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC]
+            [
+                PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
+                PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
+                PDO::ATTR_TIMEOUT            => 10,
+            ]
         );
     } catch (PDOException $e) {
         http_response_code(500);
@@ -274,7 +279,11 @@ $param   = $parts[3] ?? ''; // e.g. review id
 
 // ── HEALTH ────────────────────────────────────────────────────────────────────
 if ($uri === '/api/health' || $uri === '/health') {
-    respond(['status' => 'OK', 'timestamp' => date('c'), 'version' => '2.0.0', 'environment' => 'production']);
+    // Quick DB ping
+    $dbOk = false;
+    $dbMsg = '';
+    try { db(); $dbOk = true; } catch (Exception $e) { $dbMsg = $e->getMessage(); }
+    respond(['status' => 'OK', 'timestamp' => date('c'), 'version' => '2.0.0', 'environment' => 'production', 'db' => $dbOk ? 'connected' : 'failed: ' . $dbMsg]);
 }
 
 if ($uri === '/' || $uri === '') {
