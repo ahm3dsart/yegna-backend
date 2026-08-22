@@ -1,15 +1,4 @@
 <?php
-/**
- * Yegna API — Single-file PHP backend
- * Mirrors all routes from the Node.js/Express backend
- * Compatible with: PHP 8.x + PDO MySQL
- */
-
-// Show errors for debugging
-ini_set('display_errors', 0);
-ini_set('log_errors', 1);
-error_reporting(E_ALL);
-
 // ── CORS ──────────────────────────────────────────────────────────────────────
 header('Access-Control-Allow-Origin: *');
 header('Access-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE, OPTIONS');
@@ -18,894 +7,597 @@ header('Content-Type: application/json');
 
 if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     http_response_code(200);
-    exit();
+    exit;
 }
 
-// ── CONFIG ────────────────────────────────────────────────────────────────────
-define('DB_HOST', 'mysql-db02.remote:32636');
-define('DB_PORT', 32636);
-define('DB_NAME', 'yegna');
-define('DB_USER', 'ahmed');
-define('DB_PASS', 'Uwk_9832i');
-define('JWT_SECRET', 'yegna_jwt_super_secret_2026');
-define('EMAIL_FROM', 'yegnaapp@gmail.com');
-define('EMAIL_PASS', 'ubaj ojjz ysyq ephd');
+// ── DATABASE (same pattern as VerifyPay) ─────────────────────────────────────
+$db_host   = 'mysql-db02.remote:32636';
+$db_name   = 'yegna';
+$db_user   = 'ahmed';
+$db_pass   = 'Uwk_9832i';
+$JWT_SECRET = 'yegna_jwt_super_secret_2026';
 
-// ── DATABASE ──────────────────────────────────────────────────────────────────
-function db(): PDO {
-    static $pdo = null;
-    if ($pdo) return $pdo;
-    try {
-        // Same connection format as VerifyPay — host:port in host string
-        $host = DB_HOST; // already includes :32636
-        $pdo = new PDO(
-            "mysql:host=$host;dbname=" . DB_NAME . ";charset=utf8mb4",
-            DB_USER, DB_PASS,
-            [
-                PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
-                PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC,
-                PDO::ATTR_TIMEOUT            => 10,
-            ]
-        );
-    } catch (PDOException $e) {
-        http_response_code(500);
-        echo json_encode(['success' => false, 'message' => 'Database connection failed: ' . $e->getMessage()]);
-        exit();
-    }
-    return $pdo;
+try {
+    $pdo = new PDO("mysql:host=$db_host;dbname=$db_name;charset=utf8mb4", $db_user, $db_pass);
+    $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+    $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
+} catch (PDOException $e) {
+    http_response_code(500);
+    echo json_encode(['success' => false, 'message' => 'Database connection failed: ' . $e->getMessage()]);
+    exit;
 }
 
-// ── REQUEST HELPERS ───────────────────────────────────────────────────────────
-function body(): array {
-    return json_decode(file_get_contents('php://input'), true) ?? [];
+$input = json_decode(file_get_contents('php://input'), true) ?? [];
+
+// ── ROUTE PARSING (same pattern as VerifyPay) ─────────────────────────────────
+$path = ltrim(parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH), '/');
+
+// Strip yegna-api.php prefix
+if (strpos($path, 'yegna-api.php/api/') === 0) {
+    $endpoint = substr($path, strlen('yegna-api.php/api/'));
+} elseif (strpos($path, 'yegna-api.php/') === 0) {
+    $endpoint = substr($path, strlen('yegna-api.php/'));
+} elseif (strpos($path, 'api/') === 0) {
+    $endpoint = substr($path, strlen('api/'));
+} else {
+    $endpoint = $path;
 }
 
-function respond(array $data, int $status = 200): void {
-    http_response_code($status);
-    echo json_encode($data);
-    exit();
-}
+$endpoint = rtrim($endpoint, '/');
+$parts    = explode('/', $endpoint);
+$base     = $parts[0] ?? '';   // e.g. 'health', 'auth', 'businesses'
+$sub      = $parts[1] ?? '';   // e.g. 'login', 'register', '123'
+$subsub   = $parts[2] ?? '';   // e.g. 'reviews', 'photos'
+$subsubid = $parts[3] ?? '';   // e.g. photo id
 
-function method(): string {
-    return $_SERVER['REQUEST_METHOD'];
-}
+$method = $_SERVER['REQUEST_METHOD'];
 
 // ── JWT ───────────────────────────────────────────────────────────────────────
-function jwtEncode(array $payload, int $expirySecs = 2592000): string {
-    $header  = base64url_encode(json_encode(['alg' => 'HS256', 'typ' => 'JWT']));
+function b64url_encode($data) {
+    return rtrim(strtr(base64_encode($data), '+/', '-_'), '=');
+}
+function b64url_decode($data) {
+    return base64_decode(strtr($data, '-_', '+/') . str_repeat('=', (4 - strlen($data) % 4) % 4));
+}
+function jwt_encode($payload, $secret, $expiry = 2592000) {
+    $header  = b64url_encode(json_encode(['alg' => 'HS256', 'typ' => 'JWT']));
     $payload['iat'] = time();
-    $payload['exp'] = time() + $expirySecs;
-    $body    = base64url_encode(json_encode($payload));
-    $sig     = base64url_encode(hash_hmac('sha256', "$header.$body", JWT_SECRET, true));
+    $payload['exp'] = time() + $expiry;
+    $body    = b64url_encode(json_encode($payload));
+    $sig     = b64url_encode(hash_hmac('sha256', "$header.$body", $secret, true));
     return "$header.$body.$sig";
 }
-
-function jwtDecode(string $token): ?array {
+function jwt_decode($token, $secret) {
     $parts = explode('.', $token);
     if (count($parts) !== 3) return null;
-    [$header, $body, $sig] = $parts;
-    $expected = base64url_encode(hash_hmac('sha256', "$header.$body", JWT_SECRET, true));
+    list($header, $body, $sig) = $parts;
+    $expected = b64url_encode(hash_hmac('sha256', "$header.$body", $secret, true));
     if (!hash_equals($expected, $sig)) return null;
-    $payload = json_decode(base64url_decode($body), true);
+    $payload = json_decode(b64url_decode($body), true);
     if (!$payload || $payload['exp'] < time()) return null;
     return $payload;
 }
 
-function base64url_encode(string $data): string {
-    return rtrim(strtr(base64_encode($data), '+/', '-_'), '=');
-}
-
-function base64url_decode(string $data): string {
-    return base64_decode(strtr($data, '-_', '+/') . str_repeat('=', (4 - strlen($data) % 4) % 4));
-}
-
-function generateToken(int $userId): string {
-    return jwtEncode(['id' => $userId]);
-}
-
-function generateShortToken(array $payload, int $secs = 600): string {
-    return jwtEncode($payload, $secs);
-}
-
-// ── AUTH MIDDLEWARE ───────────────────────────────────────────────────────────
-function requireAuth(): int {
+// ── AUTH HELPERS ──────────────────────────────────────────────────────────────
+function get_auth_user_id($secret) {
     $auth = $_SERVER['HTTP_AUTHORIZATION'] ?? '';
     if (!$auth && function_exists('apache_request_headers')) {
-        $headers = apache_request_headers();
-        $auth = $headers['Authorization'] ?? '';
+        $h = apache_request_headers();
+        $auth = $h['Authorization'] ?? '';
     }
-    if (!str_starts_with($auth, 'Bearer ')) {
-        respond(['success' => false, 'message' => 'Authentication required.'], 401);
+    if (strpos($auth, 'Bearer ') !== 0) return null;
+    $payload = jwt_decode(substr($auth, 7), $secret);
+    return ($payload && isset($payload['id'])) ? (int)$payload['id'] : null;
+}
+function require_auth($secret) {
+    $id = get_auth_user_id($secret);
+    if (!$id) {
+        http_response_code(401);
+        echo json_encode(['success' => false, 'message' => 'Authentication required.']);
+        exit;
     }
-    $token   = substr($auth, 7);
-    $payload = jwtDecode($token);
-    if (!$payload || empty($payload['id'])) {
-        respond(['success' => false, 'message' => 'Invalid or expired token.'], 401);
-    }
-    return (int)$payload['id'];
+    return $id;
 }
 
-function optionalAuth(): ?int {
-    $auth = $_SERVER['HTTP_AUTHORIZATION'] ?? '';
-    if (!$auth && function_exists('apache_request_headers')) {
-        $headers = apache_request_headers();
-        $auth = $headers['Authorization'] ?? '';
-    }
-    if (!str_starts_with($auth, 'Bearer ')) return null;
-    $token   = substr($auth, 7);
-    $payload = jwtDecode($token);
-    return ($payload && !empty($payload['id'])) ? (int)$payload['id'] : null;
-}
-
-// ── EMAIL (OTP) ───────────────────────────────────────────────────────────────
-function generateOTP(): string {
-    return str_pad((string)random_int(100000, 999999), 6, '0', STR_PAD_LEFT);
-}
-
-function saveOTP(string $email, string $code, string $type = 'verify'): void {
-    $pdo = db();
-    $pdo->prepare('DELETE FROM otp_codes WHERE email = ? AND type = ?')->execute([$email, $type]);
+// ── OTP / EMAIL ───────────────────────────────────────────────────────────────
+function save_otp($pdo, $email, $code, $type = 'verify') {
+    $pdo->prepare('DELETE FROM otp_codes WHERE email=? AND type=?')->execute([$email, $type]);
     $expires = date('Y-m-d H:i:s', time() + 900);
-    $pdo->prepare('INSERT INTO otp_codes (email, code, type, expires_at) VALUES (?, ?, ?, ?)')->execute([$email, $code, $type, $expires]);
+    $pdo->prepare('INSERT INTO otp_codes (email,code,type,expires_at) VALUES (?,?,?,?)')->execute([$email, $code, $type, $expires]);
 }
-
-function verifyOTP(string $email, string $code, string $type = 'verify'): bool {
-    $pdo  = db();
-    $stmt = $pdo->prepare('SELECT * FROM otp_codes WHERE email=? AND code=? AND type=? AND used=0 AND expires_at > NOW()');
-    $stmt->execute([$email, $code, $type]);
-    $row = $stmt->fetch();
+function verify_otp($pdo, $email, $code, $type = 'verify') {
+    $s = $pdo->prepare('SELECT * FROM otp_codes WHERE email=? AND code=? AND type=? AND used=0 AND expires_at>NOW()');
+    $s->execute([$email, $code, $type]);
+    $row = $s->fetch();
     if (!$row) return false;
     $pdo->prepare('UPDATE otp_codes SET used=1 WHERE id=?')->execute([$row['id']]);
     return true;
 }
-
-function sendEmail(string $to, string $subject, string $html): bool {
-    $from    = EMAIL_FROM;
-    $pass    = EMAIL_PASS;
-    $headers = "MIME-Version: 1.0\r\nContent-Type: text/html; charset=UTF-8\r\nFrom: Yegna App <$from>\r\n";
-    // Use PHP mail() — works on most shared hosting
-    return mail($to, $subject, $html, $headers);
-}
-
-function sendVerificationEmail(string $email, string $name): void {
-    $code = generateOTP();
-    saveOTP($email, $code, 'verify');
+function send_otp_email($email, $name, $code, $type = 'verify') {
+    $subject = $type === 'reset' ? "$code — Reset your Yegna password" : "$code — Your Yegna verification code";
     $year = date('Y');
-    $html = <<<HTML
-<div style="font-family:Arial,sans-serif;max-width:500px;margin:0 auto">
-  <div style="background:#FE4A49;padding:32px;text-align:center;border-radius:12px 12px 0 0">
-    <h1 style="color:white;margin:0;font-size:28px">Yegna</h1>
-    <p style="color:rgba(255,255,255,0.85);margin:8px 0 0">Discover the best of Ethiopia</p>
-  </div>
-  <div style="background:#fff;padding:32px;border-radius:0 0 12px 12px;border:1px solid #e5e7eb">
-    <h2 style="color:#111827;margin:0 0 8px">Hi $name,</h2>
-    <p style="color:#6b7280">Use the code below to verify your email. It expires in 15 minutes.</p>
-    <div style="background:#f9fafb;border:2px dashed #FE4A49;border-radius:12px;padding:24px;text-align:center;margin:24px 0">
-      <span style="font-size:42px;font-weight:800;letter-spacing:12px;color:#FE4A49">$code</span>
-    </div>
-    <p style="color:#9ca3af;font-size:13px">If you didn't request this, ignore this email.</p>
-    <hr style="border:none;border-top:1px solid #e5e7eb;margin:24px 0">
-    <p style="color:#9ca3af;font-size:12px;text-align:center">&copy; $year Yegna &middot; Addis Ababa, Ethiopia</p>
-  </div>
-</div>
-HTML;
-    sendEmail($email, "$code — Your Yegna verification code", $html);
-}
-
-function sendPasswordResetEmail(string $email, string $name): void {
-    $code = generateOTP();
-    saveOTP($email, $code, 'reset');
-    $year = date('Y');
-    $html = <<<HTML
-<div style="font-family:Arial,sans-serif;max-width:500px;margin:0 auto">
-  <div style="background:#FE4A49;padding:32px;text-align:center;border-radius:12px 12px 0 0">
-    <h1 style="color:white;margin:0;font-size:28px">Yegna</h1>
-  </div>
-  <div style="background:#fff;padding:32px;border-radius:0 0 12px 12px;border:1px solid #e5e7eb">
-    <h2 style="color:#111827;margin:0 0 8px">Password Reset</h2>
-    <p style="color:#6b7280">Hi $name, use the code below to reset your password. Expires in 15 minutes.</p>
-    <div style="background:#fff5f5;border:2px dashed #FE4A49;border-radius:12px;padding:24px;text-align:center;margin:24px 0">
-      <span style="font-size:42px;font-weight:800;letter-spacing:12px;color:#FE4A49">$code</span>
-    </div>
-    <hr style="border:none;border-top:1px solid #e5e7eb;margin:24px 0">
-    <p style="color:#9ca3af;font-size:12px;text-align:center">&copy; $year Yegna &middot; Addis Ababa, Ethiopia</p>
-  </div>
-</div>
-HTML;
-    sendEmail($email, "$code — Reset your Yegna password", $html);
+    $title = $type === 'reset' ? 'Password Reset' : 'Verify Your Email';
+    $msg   = $type === 'reset'
+        ? "Hi $name, use the code below to reset your password. Expires in 15 minutes."
+        : "Hi $name, use the code below to verify your email. Expires in 15 minutes.";
+    $html = "<div style='font-family:Arial,sans-serif;max-width:500px;margin:0 auto'><div style='background:#FE4A49;padding:32px;text-align:center;border-radius:12px 12px 0 0'><h1 style='color:white;margin:0'>Yegna</h1></div><div style='background:#fff;padding:32px;border-radius:0 0 12px 12px;border:1px solid #e5e7eb'><h2>$title</h2><p style='color:#6b7280'>$msg</p><div style='background:#f9fafb;border:2px dashed #FE4A49;border-radius:12px;padding:24px;text-align:center;margin:24px 0'><span style='font-size:42px;font-weight:800;letter-spacing:12px;color:#FE4A49'>$code</span></div><p style='color:#9ca3af;font-size:12px;text-align:center'>&copy; $year Yegna</p></div></div>";
+    $headers = "MIME-Version: 1.0\r\nContent-Type: text/html; charset=UTF-8\r\nFrom: Yegna App <yegnaapp@gmail.com>\r\n";
+    mail($email, $subject, $html, $headers);
 }
 
 // ── USER HELPERS ──────────────────────────────────────────────────────────────
-function findUserByEmail(string $email): ?array {
-    $s = db()->prepare('SELECT * FROM users WHERE email=?');
-    $s->execute([$email]);
-    return $s->fetch() ?: null;
+function find_user_by_email($pdo, $email) {
+    $s = $pdo->prepare('SELECT * FROM users WHERE email=?'); $s->execute([$email]); return $s->fetch() ?: null;
 }
-
-function findUserByUsername(string $username): ?array {
-    $s = db()->prepare('SELECT * FROM users WHERE username=?');
-    $s->execute([$username]);
-    return $s->fetch() ?: null;
+function find_user_by_username($pdo, $u) {
+    $s = $pdo->prepare('SELECT * FROM users WHERE username=?'); $s->execute([$u]); return $s->fetch() ?: null;
 }
-
-function findUserById(int $id): ?array {
-    $s = db()->prepare('SELECT id,name,username,email,phone,bio,avatar_url,role,points,level,is_verified,email_verified,birth_date,google_id,created_at FROM users WHERE id=?');
-    $s->execute([$id]);
-    return $s->fetch() ?: null;
+function find_user_by_id($pdo, $id) {
+    $s = $pdo->prepare('SELECT id,name,username,email,phone,bio,avatar_url,role,points,level,is_verified,email_verified,birth_date,google_id,created_at FROM users WHERE id=?');
+    $s->execute([$id]); return $s->fetch() ?: null;
 }
-
-function findUserByGoogleId(string $googleId): ?array {
-    $s = db()->prepare('SELECT * FROM users WHERE google_id=?');
-    $s->execute([$googleId]);
-    return $s->fetch() ?: null;
+function username_exists($pdo, $u) {
+    $s = $pdo->prepare('SELECT id FROM users WHERE username=?'); $s->execute([$u]); return (bool)$s->fetch();
 }
-
-function usernameExists(string $username): bool {
-    $s = db()->prepare('SELECT id FROM users WHERE username=?');
-    $s->execute([$username]);
-    return (bool)$s->fetch();
-}
-
-function validateUsername(string $username): ?string {
-    if (strlen($username) < 3 || strlen($username) > 30) return 'Username must be 3–30 characters.';
-    if (!preg_match('/^[a-zA-Z0-9_.]+$/', $username)) return 'Username can only contain letters, numbers, _ and .';
+function validate_username($u) {
+    if (strlen($u) < 3 || strlen($u) > 30) return 'Username must be 3-30 characters.';
+    if (!preg_match('/^[a-zA-Z0-9_.]+$/', $u)) return 'Username can only contain letters, numbers, _ and .';
     return null;
 }
-
-function createUser(array $data): int {
+function create_user($pdo, $data) {
     $hash = null;
-    if (!empty($data['password'])) {
-        $hash = password_hash($data['password'], PASSWORD_BCRYPT);
-    }
-    $s = db()->prepare('INSERT INTO users (name,username,email,password_hash,phone,birth_date,google_id,avatar_url,email_verified,role) VALUES (?,?,?,?,?,?,?,?,?,?)');
-    $s->execute([
-        $data['name'],
-        $data['username'] ?? null,
-        $data['email'],
-        $hash,
-        $data['phone'] ?? null,
-        $data['birth_date'] ?? null,
-        $data['google_id'] ?? null,
-        $data['avatar_url'] ?? null,
-        $data['email_verified'] ?? 0,
-        $data['role'] ?? 'user',
-    ]);
-    return (int)db()->lastInsertId();
+    if (!empty($data['password'])) $hash = password_hash($data['password'], PASSWORD_BCRYPT);
+    $s = $pdo->prepare('INSERT INTO users (name,username,email,password_hash,phone,birth_date,google_id,avatar_url,email_verified,role) VALUES (?,?,?,?,?,?,?,?,?,?)');
+    $s->execute([$data['name'], $data['username'] ?? null, $data['email'], $hash, $data['phone'] ?? null, $data['birth_date'] ?? null, $data['google_id'] ?? null, $data['avatar_url'] ?? null, $data['email_verified'] ?? 0, $data['role'] ?? 'user']);
+    return (int)$pdo->lastInsertId();
 }
 
-// ── ROUTE PARSING ─────────────────────────────────────────────────────────────
-$uri     = parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH);
-$uri     = preg_replace('#^/yegna-api\.php#', '', $uri);
-$uri     = '/' . trim($uri, '/');
-$parts   = explode('/', trim($uri, '/'));
-$section = $parts[0] ?? ''; // e.g. 'api'
-$group   = $parts[1] ?? ''; // e.g. 'auth'
-$action  = $parts[2] ?? ''; // e.g. 'login'
-$param   = $parts[3] ?? ''; // e.g. review id
+// ══════════════════════════════════════════════════════════════════════════════
+// ROUTES
+// ══════════════════════════════════════════════════════════════════════════════
 
 // ── HEALTH ────────────────────────────────────────────────────────────────────
-if ($uri === '/api/health' || $uri === '/health') {
-    // Quick DB ping
-    $dbOk = false;
-    $dbMsg = '';
-    try { db(); $dbOk = true; } catch (Exception $e) { $dbMsg = $e->getMessage(); }
-    respond(['status' => 'OK', 'timestamp' => date('c'), 'version' => '2.0.0', 'environment' => 'production', 'db' => $dbOk ? 'connected' : 'failed: ' . $dbMsg]);
+if ($base === 'health' || $base === '') {
+    echo json_encode(['status' => 'OK', 'timestamp' => date('c'), 'version' => '2.0.0', 'db' => 'connected']);
+    exit;
 }
 
-if ($uri === '/' || $uri === '') {
-    respond(['message' => 'Yegna API is running!', 'version' => '2.0.0']);
-}
+// ── AUTH ──────────────────────────────────────────────────────────────────────
+if ($base === 'auth') {
 
-// ── AUTH ROUTES ───────────────────────────────────────────────────────────────
-if ($group === 'auth') {
-
-    // POST /api/auth/send-otp
-    if ($action === 'send-otp' && method() === 'POST') {
-        $b = body();
-        $email = trim($b['email'] ?? '');
-        $name  = trim($b['name'] ?? 'there');
-        if (!$email) respond(['success' => false, 'message' => 'Email is required.'], 400);
-        $existing = findUserByEmail($email);
-        if ($existing && $existing['email_verified']) {
-            respond(['success' => false, 'message' => 'An account with this email already exists. Please sign in.'], 400);
-        }
-        sendVerificationEmail($email, $name);
-        respond(['success' => true, 'message' => 'Verification code sent to your email.']);
+    if ($sub === 'send-otp' && $method === 'POST') {
+        $email = trim($input['email'] ?? '');
+        $name  = trim($input['name'] ?? 'there');
+        if (!$email) { http_response_code(400); echo json_encode(['success' => false, 'message' => 'Email is required.']); exit; }
+        $existing = find_user_by_email($pdo, $email);
+        if ($existing && $existing['email_verified']) { http_response_code(400); echo json_encode(['success' => false, 'message' => 'Account already exists. Please sign in.']); exit; }
+        $code = str_pad((string)random_int(100000, 999999), 6, '0', STR_PAD_LEFT);
+        save_otp($pdo, $email, $code, 'verify');
+        send_otp_email($email, $name, $code, 'verify');
+        echo json_encode(['success' => true, 'message' => 'Verification code sent to your email.']);
+        exit;
     }
 
-    // POST /api/auth/verify-otp
-    if ($action === 'verify-otp' && method() === 'POST') {
-        $b    = body();
-        $email = trim($b['email'] ?? '');
-        $code  = trim($b['code'] ?? '');
-        if (!$email || !$code) respond(['success' => false, 'message' => 'Email and code are required.'], 400);
-        if (!verifyOTP($email, $code, 'verify')) {
-            respond(['success' => false, 'message' => 'Invalid or expired code. Please request a new one.'], 400);
-        }
-        respond(['success' => true, 'message' => 'Email verified.']);
+    if ($sub === 'verify-otp' && $method === 'POST') {
+        $email = trim($input['email'] ?? '');
+        $code  = trim($input['code'] ?? '');
+        if (!$email || !$code) { http_response_code(400); echo json_encode(['success' => false, 'message' => 'Email and code required.']); exit; }
+        if (!verify_otp($pdo, $email, $code, 'verify')) { http_response_code(400); echo json_encode(['success' => false, 'message' => 'Invalid or expired code.']); exit; }
+        echo json_encode(['success' => true, 'message' => 'Email verified.']);
+        exit;
     }
 
-    // GET /api/auth/check-username
-    if ($action === 'check-username' && method() === 'GET') {
-        $username = trim($_GET['username'] ?? '');
-        $err = validateUsername($username);
-        if ($err) respond(['success' => false, 'available' => false, 'message' => $err], 400);
-        $taken = usernameExists($username);
-        respond(['success' => true, 'available' => !$taken, 'message' => $taken ? 'Username is already taken.' : 'Username is available.']);
+    if ($sub === 'check-username' && $method === 'GET') {
+        $u   = trim($_GET['username'] ?? '');
+        $err = validate_username($u);
+        if ($err) { http_response_code(400); echo json_encode(['success' => false, 'available' => false, 'message' => $err]); exit; }
+        $taken = username_exists($pdo, $u);
+        echo json_encode(['success' => true, 'available' => !$taken, 'message' => $taken ? 'Username taken.' : 'Username available.']);
+        exit;
     }
 
-    // POST /api/auth/register
-    if ($action === 'register' && method() === 'POST') {
-        $b          = body();
-        $name       = trim($b['name'] ?? '');
-        $email      = trim($b['email'] ?? '');
-        $username   = trim($b['username'] ?? '');
-        $password   = $b['password'] ?? '';
-        $birth_date = $b['birth_date'] ?? null;
-
-        if (!$name || !$email || !$username || !$password) {
-            respond(['success' => false, 'message' => 'Name, email, username and password are required.'], 400);
-        }
-        $uErr = validateUsername($username);
-        if ($uErr) respond(['success' => false, 'message' => $uErr], 400);
-        if (strlen($password) < 6) respond(['success' => false, 'message' => 'Password must be at least 6 characters.'], 400);
-
-        if (findUserByEmail($email)) respond(['success' => false, 'message' => 'An account with this email already exists.'], 400);
-        if (usernameExists($username)) respond(['success' => false, 'message' => 'Username is already taken. Please choose another.'], 400);
-
-        $userId = createUser(['name' => $name, 'email' => $email, 'username' => $username, 'password' => $password, 'birth_date' => $birth_date, 'email_verified' => 1]);
-        $token  = generateToken($userId);
-        $user   = findUserById($userId);
-        respond(['success' => true, 'message' => 'Account created!', 'token' => $token, 'user' => $user], 201);
+    if ($sub === 'register' && $method === 'POST') {
+        $name     = trim($input['name'] ?? '');
+        $email    = trim($input['email'] ?? '');
+        $username = trim($input['username'] ?? '');
+        $password = $input['password'] ?? '';
+        $bd       = $input['birth_date'] ?? null;
+        if (!$name || !$email || !$username || !$password) { http_response_code(400); echo json_encode(['success' => false, 'message' => 'Name, email, username and password are required.']); exit; }
+        $uerr = validate_username($username);
+        if ($uerr) { http_response_code(400); echo json_encode(['success' => false, 'message' => $uerr]); exit; }
+        if (strlen($password) < 6) { http_response_code(400); echo json_encode(['success' => false, 'message' => 'Password must be at least 6 characters.']); exit; }
+        if (find_user_by_email($pdo, $email)) { http_response_code(400); echo json_encode(['success' => false, 'message' => 'Email already exists.']); exit; }
+        if (username_exists($pdo, $username)) { http_response_code(400); echo json_encode(['success' => false, 'message' => 'Username taken.']); exit; }
+        $uid   = create_user($pdo, ['name' => $name, 'email' => $email, 'username' => $username, 'password' => $password, 'birth_date' => $bd, 'email_verified' => 1]);
+        $token = jwt_encode(['id' => $uid], $JWT_SECRET);
+        $user  = find_user_by_id($pdo, $uid);
+        http_response_code(201);
+        echo json_encode(['success' => true, 'message' => 'Account created!', 'token' => $token, 'user' => $user]);
+        exit;
     }
 
-    // POST /api/auth/login
-    if ($action === 'login' && method() === 'POST') {
-        $b          = body();
-        $identifier = trim($b['identifier'] ?? '');
-        $password   = $b['password'] ?? '';
-        if (!$identifier || !$password) respond(['success' => false, 'message' => 'Username/email and password are required.'], 400);
-
-        $user = str_contains($identifier, '@') ? findUserByEmail($identifier) : findUserByUsername($identifier);
-        if (!$user) respond(['success' => false, 'message' => 'No account found with that username or email.'], 401);
-        if (empty($user['password_hash'])) respond(['success' => false, 'message' => 'This account uses Google sign-in.'], 401);
-        if (!password_verify($password, $user['password_hash'])) respond(['success' => false, 'message' => 'Incorrect password. Please try again.'], 401);
-
-        $token    = generateToken($user['id']);
-        $userData = findUserById($user['id']);
-        respond(['success' => true, 'message' => 'Signed in.', 'token' => $token, 'user' => $userData]);
+    if ($sub === 'login' && $method === 'POST') {
+        $identifier = trim($input['identifier'] ?? '');
+        $password   = $input['password'] ?? '';
+        if (!$identifier || !$password) { http_response_code(400); echo json_encode(['success' => false, 'message' => 'Username/email and password required.']); exit; }
+        $user = strpos($identifier, '@') !== false ? find_user_by_email($pdo, $identifier) : find_user_by_username($pdo, $identifier);
+        if (!$user) { http_response_code(401); echo json_encode(['success' => false, 'message' => 'No account found.']); exit; }
+        if (empty($user['password_hash'])) { http_response_code(401); echo json_encode(['success' => false, 'message' => 'This account uses Google sign-in.']); exit; }
+        if (!password_verify($password, $user['password_hash'])) { http_response_code(401); echo json_encode(['success' => false, 'message' => 'Incorrect password.']); exit; }
+        $token    = jwt_encode(['id' => $user['id']], $JWT_SECRET);
+        $userData = find_user_by_id($pdo, $user['id']);
+        echo json_encode(['success' => true, 'message' => 'Signed in.', 'token' => $token, 'user' => $userData]);
+        exit;
     }
 
-    // POST /api/auth/forgot-password
-    if ($action === 'forgot-password' && method() === 'POST') {
-        $b     = body();
-        $email = trim($b['email'] ?? '');
-        if (!$email) respond(['success' => false, 'message' => 'Email is required.'], 400);
-        $user = findUserByEmail($email);
-        if (!$user) respond(['success' => true, 'message' => 'If an account exists, a reset code has been sent.']);
-        if (empty($user['password_hash'])) respond(['success' => false, 'message' => 'This account uses Google sign-in.'], 400);
-        sendPasswordResetEmail($email, $user['name']);
-        respond(['success' => true, 'message' => 'Password reset code sent to your email.']);
+    if ($sub === 'forgot-password' && $method === 'POST') {
+        $email = trim($input['email'] ?? '');
+        if (!$email) { http_response_code(400); echo json_encode(['success' => false, 'message' => 'Email required.']); exit; }
+        $user = find_user_by_email($pdo, $email);
+        if (!$user) { echo json_encode(['success' => true, 'message' => 'If an account exists, a reset code has been sent.']); exit; }
+        $code = str_pad((string)random_int(100000, 999999), 6, '0', STR_PAD_LEFT);
+        save_otp($pdo, $email, $code, 'reset');
+        send_otp_email($email, $user['name'], $code, 'reset');
+        echo json_encode(['success' => true, 'message' => 'Password reset code sent.']);
+        exit;
     }
 
-    // POST /api/auth/verify-reset-otp
-    if ($action === 'verify-reset-otp' && method() === 'POST') {
-        $b     = body();
-        $email = trim($b['email'] ?? '');
-        $code  = trim($b['code'] ?? '');
-        if (!$email || !$code) respond(['success' => false, 'message' => 'Email and code required.'], 400);
-        if (!verifyOTP($email, $code, 'reset')) respond(['success' => false, 'message' => 'Invalid or expired code.'], 400);
-        $resetToken = generateShortToken(['email' => $email, 'type' => 'reset'], 600);
-        respond(['success' => true, 'resetToken' => $resetToken]);
+    if ($sub === 'verify-reset-otp' && $method === 'POST') {
+        $email = trim($input['email'] ?? '');
+        $code  = trim($input['code'] ?? '');
+        if (!$email || !$code) { http_response_code(400); echo json_encode(['success' => false, 'message' => 'Email and code required.']); exit; }
+        if (!verify_otp($pdo, $email, $code, 'reset')) { http_response_code(400); echo json_encode(['success' => false, 'message' => 'Invalid or expired code.']); exit; }
+        $resetToken = jwt_encode(['email' => $email, 'type' => 'reset'], $JWT_SECRET, 600);
+        echo json_encode(['success' => true, 'resetToken' => $resetToken]);
+        exit;
     }
 
-    // POST /api/auth/reset-password
-    if ($action === 'reset-password' && method() === 'POST') {
-        $b           = body();
-        $resetToken  = $b['resetToken'] ?? '';
-        $newPassword = $b['newPassword'] ?? '';
-        if (!$resetToken || !$newPassword) respond(['success' => false, 'message' => 'Reset token and new password required.'], 400);
-        if (strlen($newPassword) < 6) respond(['success' => false, 'message' => 'Password must be at least 6 characters.'], 400);
-        $payload = jwtDecode($resetToken);
-        if (!$payload || ($payload['type'] ?? '') !== 'reset') respond(['success' => false, 'message' => 'Reset token expired or invalid.'], 400);
-        $user = findUserByEmail($payload['email']);
-        if (!$user) respond(['success' => false, 'message' => 'User not found.'], 404);
+    if ($sub === 'reset-password' && $method === 'POST') {
+        $resetToken  = $input['resetToken'] ?? '';
+        $newPassword = $input['newPassword'] ?? '';
+        if (!$resetToken || !$newPassword) { http_response_code(400); echo json_encode(['success' => false, 'message' => 'Token and new password required.']); exit; }
+        if (strlen($newPassword) < 6) { http_response_code(400); echo json_encode(['success' => false, 'message' => 'Password must be at least 6 characters.']); exit; }
+        $payload = jwt_decode($resetToken, $JWT_SECRET);
+        if (!$payload || ($payload['type'] ?? '') !== 'reset') { http_response_code(400); echo json_encode(['success' => false, 'message' => 'Invalid or expired token.']); exit; }
+        $user = find_user_by_email($pdo, $payload['email']);
+        if (!$user) { http_response_code(404); echo json_encode(['success' => false, 'message' => 'User not found.']); exit; }
         $hash = password_hash($newPassword, PASSWORD_BCRYPT);
-        db()->prepare('UPDATE users SET password_hash=? WHERE id=?')->execute([$hash, $user['id']]);
-        respond(['success' => true, 'message' => 'Password reset successfully. You can now sign in.']);
+        $pdo->prepare('UPDATE users SET password_hash=? WHERE id=?')->execute([$hash, $user['id']]);
+        echo json_encode(['success' => true, 'message' => 'Password reset successfully.']);
+        exit;
     }
 
-    // GET /api/auth/me
-    if ($action === 'me' && method() === 'GET') {
-        $userId = requireAuth();
-        $user   = findUserById($userId);
-        if (!$user) respond(['success' => false, 'message' => 'User not found.'], 404);
-        respond(['success' => true, 'user' => $user]);
-    }
-}
-
-// ── BUSINESS ROUTES ───────────────────────────────────────────────────────────
-if ($group === 'businesses') {
-    try {
-    $userId = optionalAuth();
-
-    // GET /api/businesses/trending
-    if ($action === 'trending' && method() === 'GET') {
-        $s = db()->prepare('SELECT * FROM businesses WHERE is_active=1 ORDER BY review_count DESC, rating DESC LIMIT 10');
-        $s->execute();
-        respond(['success' => true, 'data' => $s->fetchAll()]);
-    }
-
-    // GET /api/businesses/top-rated
-    if ($action === 'top-rated' && method() === 'GET') {
-        $s = db()->prepare('SELECT * FROM businesses WHERE is_active=1 AND review_count>0 ORDER BY rating DESC, review_count DESC LIMIT 10');
-        $s->execute();
-        respond(['success' => true, 'data' => $s->fetchAll()]);
-    }
-
-    // GET /api/businesses/recently-added
-    if ($action === 'recently-added' && method() === 'GET') {
-        $s = db()->prepare('SELECT * FROM businesses WHERE is_active=1 ORDER BY created_at DESC LIMIT 10');
-        $s->execute();
-        respond(['success' => true, 'data' => $s->fetchAll()]);
-    }
-
-    // GET /api/businesses/categories
-    if ($action === 'categories' && method() === 'GET') {
-        $s = db()->query('SELECT * FROM categories ORDER BY name');
-        respond(['success' => true, 'data' => $s->fetchAll()]);
-    }
-
-    // GET /api/businesses/nearby
-    if ($action === 'nearby' && method() === 'GET') {
-        $lat    = (float)($_GET['lat'] ?? 0);
-        $lng    = (float)($_GET['lng'] ?? 0);
-        $radius = (float)($_GET['radius'] ?? 10);
-        if (!$lat || !$lng) respond(['success' => false, 'message' => 'Latitude and longitude are required.'], 400);
-        $s = db()->prepare(
-            'SELECT *, ( 6371 * acos( cos(radians(?)) * cos(radians(latitude)) * cos(radians(longitude) - radians(?)) + sin(radians(?)) * sin(radians(latitude)) ) ) AS distance
-             FROM businesses WHERE is_active=1 HAVING distance < ? ORDER BY distance LIMIT 30'
-        );
-        $s->execute([$lat, $lng, $lat, $radius]);
-        respond(['success' => true, 'data' => $s->fetchAll()]);
-    }
-
-    // POST /api/businesses/favorite
-    if ($action === 'favorite' && method() === 'POST') {
-        $userId = requireAuth();
-        $b      = body();
-        $bizId  = (int)($b['businessId'] ?? 0);
-        if (!$bizId) respond(['success' => false, 'message' => 'Business ID is required.'], 400);
-        $existing = db()->prepare('SELECT id FROM favorites WHERE user_id=? AND business_id=?');
-        $existing->execute([$userId, $bizId]);
-        if ($existing->fetch()) {
-            db()->prepare('DELETE FROM favorites WHERE user_id=? AND business_id=?')->execute([$userId, $bizId]);
-            respond(['success' => true, 'data' => ['isFavorite' => false]]);
-        } else {
-            db()->prepare('INSERT INTO favorites (user_id,business_id) VALUES (?,?)')->execute([$userId, $bizId]);
-            respond(['success' => true, 'data' => ['isFavorite' => true]]);
-        }
-    }
-
-    // GET /api/businesses/search
-    if ($action === 'search' && method() === 'GET') {
-        $q         = '%' . trim($_GET['q'] ?? '') . '%';
-        $category  = $_GET['category'] ?? null;
-        $city      = $_GET['city'] ?? null;
-        $minRating = (float)($_GET['minRating'] ?? 0);
-        $limit     = (int)($_GET['limit'] ?? 30);
-        $offset    = (int)($_GET['offset'] ?? 0);
-
-        $sql    = 'SELECT * FROM businesses WHERE is_active=1 AND (name LIKE ? OR description LIKE ? OR category LIKE ?)';
-        $params = [$q, $q, $q];
-        if ($category) { $sql .= ' AND category=?'; $params[] = $category; }
-        if ($city)     { $sql .= ' AND city=?';     $params[] = $city; }
-        if ($minRating) { $sql .= ' AND rating>=?'; $params[] = $minRating; }
-        $sql .= ' ORDER BY rating DESC LIMIT ? OFFSET ?';
-        $params[] = $limit;
-        $params[] = $offset;
-        $s = db()->prepare($sql);
-        $s->execute($params);
-        $results = $s->fetchAll();
-        respond(['success' => true, 'data' => $results, 'count' => count($results)]);
-    }
-
-    // GET /api/businesses/:id/reviews
-    if ($param === 'reviews' && method() === 'GET') {
-        $bizId  = (int)$action;
-        $limit  = (int)($_GET['limit'] ?? 20);
-        $offset = (int)($_GET['offset'] ?? 0);
-        $s = db()->prepare(
-            'SELECT r.*, u.name as user_name, u.avatar_url FROM reviews r
-             JOIN users u ON r.user_id=u.id WHERE r.business_id=?
-             ORDER BY r.created_at DESC LIMIT ? OFFSET ?'
-        );
-        $s->execute([$bizId, $limit, $offset]);
-        $total = db()->prepare('SELECT COUNT(*) as c FROM reviews WHERE business_id=?');
-        $total->execute([$bizId]);
-        respond(['success' => true, 'data' => $s->fetchAll(), 'total' => $total->fetch()['c']]);
-    }
-
-    // POST /api/businesses/:id/reviews
-    if ($param === 'reviews' && method() === 'POST') {
-        $userId = requireAuth();
-        $bizId  = (int)$action;
-        $b      = body();
-        $rating  = (int)($b['rating'] ?? 0);
-        $content = trim($b['content'] ?? '');
-        $title   = trim($b['title'] ?? '');
-        if (!$rating || !$content) respond(['success' => false, 'message' => 'Rating and content are required.'], 400);
-        if ($rating < 1 || $rating > 5) respond(['success' => false, 'message' => 'Rating must be between 1 and 5.'], 400);
-        $check = db()->prepare('SELECT id FROM reviews WHERE business_id=? AND user_id=?');
-        $check->execute([$bizId, $userId]);
-        if ($check->fetch()) respond(['success' => false, 'message' => 'You have already reviewed this business.'], 400);
-        $s = db()->prepare('INSERT INTO reviews (business_id,user_id,rating,title,content) VALUES (?,?,?,?,?)');
-        $s->execute([$bizId, $userId, $rating, $title ?: null, $content]);
-        $reviewId = (int)db()->lastInsertId();
-        // Update business rating
-        $avg = db()->prepare('SELECT AVG(rating) as avg, COUNT(*) as cnt FROM reviews WHERE business_id=?');
-        $avg->execute([$bizId]);
-        $r = $avg->fetch();
-        db()->prepare('UPDATE businesses SET rating=?, review_count=? WHERE id=?')->execute([round($r['avg'], 2), $r['cnt'], $bizId]);
-        // Award points
-        db()->prepare('UPDATE users SET points=points+10 WHERE id=?')->execute([$userId]);
-        respond(['success' => true, 'message' => 'Review added successfully.', 'data' => ['id' => $reviewId]], 201);
-    }
-
-    // GET /api/businesses (list with filters)
-    if (($action === '' || $action === null) && method() === 'GET') {
-        $category  = $_GET['category'] ?? null;
-        $city      = $_GET['city'] ?? null;
-        $search    = $_GET['search'] ?? null;
-        $minRating = (float)($_GET['minRating'] ?? 0);
-        $limit     = (int)($_GET['limit'] ?? 20);
-        $offset    = (int)($_GET['offset'] ?? 0);
-
-        $sql    = 'SELECT * FROM businesses WHERE is_active=1';
-        $params = [];
-        if ($category)  { $sql .= ' AND category=?'; $params[] = $category; }
-        if ($city)      { $sql .= ' AND city=?';     $params[] = $city; }
-        if ($search)    { $sql .= ' AND (name LIKE ? OR description LIKE ?)'; $params[] = "%$search%"; $params[] = "%$search%"; }
-        if ($minRating) { $sql .= ' AND rating>=?';  $params[] = $minRating; }
-        $sql .= ' ORDER BY rating DESC LIMIT ? OFFSET ?';
-        $params[] = $limit;
-        $params[] = $offset;
-        $s = db()->prepare($sql);
-        $s->execute($params);
-        $results = $s->fetchAll();
-        respond(['success' => true, 'data' => $results, 'count' => count($results)]);
-    }
-
-    // GET /api/businesses/:id
-    if ($action && $param === '' && method() === 'GET' && is_numeric($action)) {
-        $bizId = (int)$action;
-        $s = db()->prepare('SELECT * FROM businesses WHERE id=? AND is_active=1');
-        $s->execute([$bizId]);
-        $biz = $s->fetch();
-        if (!$biz) respond(['success' => false, 'message' => 'Business not found.'], 404);
-
-        $hours = db()->prepare('SELECT * FROM business_hours WHERE business_id=? ORDER BY FIELD(day_of_week,"Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday")');
-        $hours->execute([$bizId]);
-        $biz['hours'] = $hours->fetchAll();
-
-        $photos = db()->prepare('SELECT * FROM photos WHERE business_id=? ORDER BY is_primary DESC');
-        $photos->execute([$bizId]);
-        $biz['photos'] = $photos->fetchAll();
-
-        if ($userId) {
-            $fav = db()->prepare('SELECT id FROM favorites WHERE user_id=? AND business_id=?');
-            $fav->execute([$userId, $bizId]);
-            $biz['is_favorite'] = (bool)$fav->fetch();
-        } else {
-            $biz['is_favorite'] = false;
-        }
-        respond(['success' => true, 'data' => $biz]);
+    if ($sub === 'me' && $method === 'GET') {
+        $uid  = require_auth($JWT_SECRET);
+        $user = find_user_by_id($pdo, $uid);
+        if (!$user) { http_response_code(404); echo json_encode(['success' => false, 'message' => 'User not found.']); exit; }
+        echo json_encode(['success' => true, 'user' => $user]);
+        exit;
     }
 }
 
-// ── USER ROUTES ───────────────────────────────────────────────────────────────
-if ($group === 'user') {
-    $userId = requireAuth();
+// ── BUSINESSES ────────────────────────────────────────────────────────────────
+if ($base === 'businesses') {
+    $uid = get_auth_user_id($JWT_SECRET);
 
-    // GET /api/user/profile
-    if ($action === 'profile' && method() === 'GET') {
-        $user  = findUserById($userId);
-        $favs  = db()->prepare('SELECT b.* FROM businesses b JOIN favorites f ON f.business_id=b.id WHERE f.user_id=? ORDER BY f.created_at DESC');
-        $favs->execute([$userId]);
-        $revs  = db()->prepare('SELECT r.*, b.name as business_name FROM reviews r JOIN businesses b ON r.business_id=b.id WHERE r.user_id=? ORDER BY r.created_at DESC');
-        $revs->execute([$userId]);
-        $vis   = db()->prepare('SELECT b.* FROM businesses b JOIN visits v ON v.business_id=b.id WHERE v.user_id=? ORDER BY v.visited_at DESC');
-        $vis->execute([$userId]);
-        $stats = db()->prepare('SELECT (SELECT COUNT(*) FROM reviews WHERE user_id=?) as reviews, (SELECT COUNT(*) FROM favorites WHERE user_id=?) as favorites, (SELECT COUNT(*) FROM visits WHERE user_id=?) as visits');
-        $stats->execute([$userId, $userId, $userId]);
-        respond(['success' => true, 'data' => ['user' => $user, 'stats' => $stats->fetch(), 'favorites' => $favs->fetchAll(), 'reviews' => $revs->fetchAll(), 'visited' => $vis->fetchAll()]]);
+    if ($sub === 'trending' && $method === 'GET') {
+        $s = $pdo->query('SELECT * FROM businesses WHERE is_active=1 ORDER BY review_count DESC, rating DESC LIMIT 10');
+        echo json_encode(['success' => true, 'data' => $s->fetchAll()]); exit;
     }
-
-    // PUT /api/user/profile
-    if ($action === 'profile' && in_array(method(), ['PUT', 'PATCH'])) {
-        $b      = body();
-        $fields = ['name', 'email', 'phone', 'bio', 'avatar_url', 'username', 'birth_date'];
-        $sets   = [];
-        $vals   = [];
-        foreach ($fields as $f) {
-            if (isset($b[$f])) { $sets[] = "$f=?"; $vals[] = $b[$f]; }
-        }
-        if ($sets) {
-            $vals[] = $userId;
-            db()->prepare('UPDATE users SET ' . implode(',', $sets) . ' WHERE id=?')->execute($vals);
-        }
-        respond(['success' => true, 'message' => 'Profile updated.', 'data' => findUserById($userId)]);
+    if ($sub === 'top-rated' && $method === 'GET') {
+        $s = $pdo->query('SELECT * FROM businesses WHERE is_active=1 AND review_count>0 ORDER BY rating DESC, review_count DESC LIMIT 10');
+        echo json_encode(['success' => true, 'data' => $s->fetchAll()]); exit;
     }
-
-    // GET /api/user/favorites
-    if ($action === 'favorites' && method() === 'GET') {
-        $s = db()->prepare('SELECT b.* FROM businesses b JOIN favorites f ON f.business_id=b.id WHERE f.user_id=? ORDER BY f.created_at DESC');
-        $s->execute([$userId]);
+    if ($sub === 'recently-added' && $method === 'GET') {
+        $s = $pdo->query('SELECT * FROM businesses WHERE is_active=1 ORDER BY created_at DESC LIMIT 10');
+        echo json_encode(['success' => true, 'data' => $s->fetchAll()]); exit;
+    }
+    if ($sub === 'categories' && $method === 'GET') {
+        $s = $pdo->query('SELECT * FROM categories ORDER BY name');
+        echo json_encode(['success' => true, 'data' => $s->fetchAll()]); exit;
+    }
+    if ($sub === 'nearby' && $method === 'GET') {
+        $lat = (float)($_GET['lat'] ?? 0);
+        $lng = (float)($_GET['lng'] ?? 0);
+        $rad = (float)($_GET['radius'] ?? 10);
+        if (!$lat || !$lng) { http_response_code(400); echo json_encode(['success' => false, 'message' => 'lat and lng required.']); exit; }
+        $s = $pdo->prepare('SELECT *, (6371*acos(cos(radians(?))*cos(radians(latitude))*cos(radians(longitude)-radians(?))+sin(radians(?))*sin(radians(latitude)))) AS distance FROM businesses WHERE is_active=1 HAVING distance<? ORDER BY distance LIMIT 30');
+        $s->execute([$lat, $lng, $lat, $rad]);
         $rows = $s->fetchAll();
-        respond(['success' => true, 'data' => $rows, 'count' => count($rows)]);
+        echo json_encode(['success' => true, 'data' => $rows, 'count' => count($rows)]); exit;
     }
-
-    // GET /api/user/visited
-    if ($action === 'visited' && method() === 'GET') {
-        $s = db()->prepare('SELECT b.* FROM businesses b JOIN visits v ON v.business_id=b.id WHERE v.user_id=? ORDER BY v.visited_at DESC');
-        $s->execute([$userId]);
-        respond(['success' => true, 'data' => $s->fetchAll()]);
-    }
-
-    // POST /api/user/visit
-    if ($action === 'visit' && method() === 'POST') {
-        $b      = body();
-        $bizId  = (int)($b['businessId'] ?? 0);
-        if (!$bizId) respond(['success' => false, 'message' => 'Business ID is required.'], 400);
-        try {
-            db()->prepare('INSERT INTO visits (user_id,business_id) VALUES (?,?)')->execute([$userId, $bizId]);
-            respond(['success' => true, 'message' => 'Check-in recorded!']);
-        } catch (PDOException $e) {
-            respond(['success' => true, 'message' => 'Already checked in here.', 'already_visited' => true]);
+    if ($sub === 'favorite' && $method === 'POST') {
+        $uid   = require_auth($JWT_SECRET);
+        $bizId = (int)($input['businessId'] ?? 0);
+        if (!$bizId) { http_response_code(400); echo json_encode(['success' => false, 'message' => 'businessId required.']); exit; }
+        $chk = $pdo->prepare('SELECT id FROM favorites WHERE user_id=? AND business_id=?'); $chk->execute([$uid, $bizId]);
+        if ($chk->fetch()) {
+            $pdo->prepare('DELETE FROM favorites WHERE user_id=? AND business_id=?')->execute([$uid, $bizId]);
+            echo json_encode(['success' => true, 'data' => ['isFavorite' => false]]);
+        } else {
+            $pdo->prepare('INSERT INTO favorites (user_id,business_id) VALUES (?,?)')->execute([$uid, $bizId]);
+            echo json_encode(['success' => true, 'data' => ['isFavorite' => true]]);
         }
+        exit;
     }
-
-    // GET /api/user/reviews
-    if ($action === 'reviews' && method() === 'GET') {
-        $s = db()->prepare('SELECT r.*, b.name as business_name FROM reviews r JOIN businesses b ON r.business_id=b.id WHERE r.user_id=? ORDER BY r.created_at DESC');
-        $s->execute([$userId]);
-        respond(['success' => true, 'data' => $s->fetchAll()]);
+    if ($sub === 'search' && $method === 'GET') {
+        $q   = '%' . trim($_GET['q'] ?? '') . '%';
+        $cat = $_GET['category'] ?? null;
+        $city = $_GET['city'] ?? null;
+        $min = (float)($_GET['minRating'] ?? 0);
+        $lim = (int)($_GET['limit'] ?? 30);
+        $off = (int)($_GET['offset'] ?? 0);
+        $sql = 'SELECT * FROM businesses WHERE is_active=1 AND (name LIKE ? OR description LIKE ? OR category LIKE ?)';
+        $params = [$q, $q, $q];
+        if ($cat)  { $sql .= ' AND category=?'; $params[] = $cat; }
+        if ($city) { $sql .= ' AND city=?'; $params[] = $city; }
+        if ($min)  { $sql .= ' AND rating>=?'; $params[] = $min; }
+        $sql .= ' ORDER BY rating DESC LIMIT ? OFFSET ?';
+        $params[] = $lim; $params[] = $off;
+        $s = $pdo->prepare($sql); $s->execute($params); $rows = $s->fetchAll();
+        echo json_encode(['success' => true, 'data' => $rows, 'count' => count($rows)]); exit;
     }
+    // GET /businesses/:id/reviews
+    if (is_numeric($sub) && $subsub === 'reviews' && $method === 'GET') {
+        $bizId = (int)$sub;
+        $lim = (int)($_GET['limit'] ?? 20); $off = (int)($_GET['offset'] ?? 0);
+        $s = $pdo->prepare('SELECT r.*,u.name as user_name,u.avatar_url FROM reviews r JOIN users u ON r.user_id=u.id WHERE r.business_id=? ORDER BY r.created_at DESC LIMIT ? OFFSET ?');
+        $s->execute([$bizId, $lim, $off]);
+        $tot = $pdo->prepare('SELECT COUNT(*) as c FROM reviews WHERE business_id=?'); $tot->execute([$bizId]);
+        echo json_encode(['success' => true, 'data' => $s->fetchAll(), 'total' => $tot->fetch()['c']]); exit;
+    }
+    // POST /businesses/:id/reviews
+    if (is_numeric($sub) && $subsub === 'reviews' && $method === 'POST') {
+        $uid   = require_auth($JWT_SECRET);
+        $bizId = (int)$sub;
+        $rating  = (int)($input['rating'] ?? 0);
+        $content = trim($input['content'] ?? '');
+        $title   = trim($input['title'] ?? '');
+        if (!$rating || !$content) { http_response_code(400); echo json_encode(['success' => false, 'message' => 'Rating and content required.']); exit; }
+        if ($rating < 1 || $rating > 5) { http_response_code(400); echo json_encode(['success' => false, 'message' => 'Rating must be 1-5.']); exit; }
+        $chk = $pdo->prepare('SELECT id FROM reviews WHERE business_id=? AND user_id=?'); $chk->execute([$bizId, $uid]);
+        if ($chk->fetch()) { http_response_code(400); echo json_encode(['success' => false, 'message' => 'Already reviewed.']); exit; }
+        $pdo->prepare('INSERT INTO reviews (business_id,user_id,rating,title,content) VALUES (?,?,?,?,?)')->execute([$bizId, $uid, $rating, $title ?: null, $content]);
+        $rid = (int)$pdo->lastInsertId();
+        $avg = $pdo->prepare('SELECT AVG(rating) as a, COUNT(*) as c FROM reviews WHERE business_id=?'); $avg->execute([$bizId]);
+        $r = $avg->fetch();
+        $pdo->prepare('UPDATE businesses SET rating=?,review_count=? WHERE id=?')->execute([round($r['a'], 2), $r['c'], $bizId]);
+        $pdo->prepare('UPDATE users SET points=points+10 WHERE id=?')->execute([$uid]);
+        http_response_code(201);
+        echo json_encode(['success' => true, 'message' => 'Review added.', 'data' => ['id' => $rid]]); exit;
+    }
+    // GET /businesses/:id
+    if (is_numeric($sub) && $subsub === '' && $method === 'GET') {
+        $bizId = (int)$sub;
+        $s = $pdo->prepare('SELECT * FROM businesses WHERE id=? AND is_active=1'); $s->execute([$bizId]);
+        $biz = $s->fetch();
+        if (!$biz) { http_response_code(404); echo json_encode(['success' => false, 'message' => 'Business not found.']); exit; }
+        $hrs = $pdo->prepare('SELECT * FROM business_hours WHERE business_id=? ORDER BY FIELD(day_of_week,"Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday")'); $hrs->execute([$bizId]);
+        $biz['hours'] = $hrs->fetchAll();
+        $phs = $pdo->prepare('SELECT * FROM photos WHERE business_id=? ORDER BY is_primary DESC'); $phs->execute([$bizId]);
+        $biz['photos'] = $phs->fetchAll();
+        $biz['is_favorite'] = false;
+        if ($uid) { $fav = $pdo->prepare('SELECT id FROM favorites WHERE user_id=? AND business_id=?'); $fav->execute([$uid, $bizId]); $biz['is_favorite'] = (bool)$fav->fetch(); }
+        echo json_encode(['success' => true, 'data' => $biz]); exit;
+    }
+    // GET /businesses (list)
+    if ($sub === '' && $method === 'GET') {
+        $cat = $_GET['category'] ?? null;
+        $city = $_GET['city'] ?? null;
+        $search = $_GET['search'] ?? null;
+        $min = (float)($_GET['minRating'] ?? 0);
+        $lim = (int)($_GET['limit'] ?? 20);
+        $off = (int)($_GET['offset'] ?? 0);
+        $sql = 'SELECT * FROM businesses WHERE is_active=1';
+        $params = [];
+        if ($cat)    { $sql .= ' AND category=?'; $params[] = $cat; }
+        if ($city)   { $sql .= ' AND city=?'; $params[] = $city; }
+        if ($search) { $sql .= ' AND (name LIKE ? OR description LIKE ?)'; $params[] = "%$search%"; $params[] = "%$search%"; }
+        if ($min)    { $sql .= ' AND rating>=?'; $params[] = $min; }
+        $sql .= ' ORDER BY rating DESC LIMIT ? OFFSET ?';
+        $params[] = $lim; $params[] = $off;
+        $s = $pdo->prepare($sql); $s->execute($params); $rows = $s->fetchAll();
+        echo json_encode(['success' => true, 'data' => $rows, 'count' => count($rows)]); exit;
+    }
+}
 
-    // GET /api/user/stats
-    if ($action === 'stats' && method() === 'GET') {
-        $s = db()->prepare('SELECT (SELECT COUNT(*) FROM reviews WHERE user_id=?) as reviews, (SELECT COUNT(*) FROM favorites WHERE user_id=?) as favorites, (SELECT COUNT(*) FROM visits WHERE user_id=?) as visits');
-        $s->execute([$userId, $userId, $userId]);
-        respond(['success' => true, 'data' => $s->fetch()]);
+// ── USER ──────────────────────────────────────────────────────────────────────
+if ($base === 'user') {
+    $uid = require_auth($JWT_SECRET);
+
+    if ($sub === 'profile' && $method === 'GET') {
+        $user = find_user_by_id($pdo, $uid);
+        $favs = $pdo->prepare('SELECT b.* FROM businesses b JOIN favorites f ON f.business_id=b.id WHERE f.user_id=? ORDER BY f.created_at DESC'); $favs->execute([$uid]);
+        $revs = $pdo->prepare('SELECT r.*,b.name as business_name FROM reviews r JOIN businesses b ON r.business_id=b.id WHERE r.user_id=? ORDER BY r.created_at DESC'); $revs->execute([$uid]);
+        $vis  = $pdo->prepare('SELECT b.* FROM businesses b JOIN visits v ON v.business_id=b.id WHERE v.user_id=? ORDER BY v.visited_at DESC'); $vis->execute([$uid]);
+        $st   = $pdo->prepare('SELECT (SELECT COUNT(*) FROM reviews WHERE user_id=?) as reviews,(SELECT COUNT(*) FROM favorites WHERE user_id=?) as favorites,(SELECT COUNT(*) FROM visits WHERE user_id=?) as visits'); $st->execute([$uid,$uid,$uid]);
+        echo json_encode(['success' => true, 'data' => ['user' => $user, 'stats' => $st->fetch(), 'favorites' => $favs->fetchAll(), 'reviews' => $revs->fetchAll(), 'visited' => $vis->fetchAll()]]); exit;
+    }
+    if ($sub === 'profile' && ($method === 'PUT' || $method === 'PATCH')) {
+        $allowed = ['name','email','phone','bio','avatar_url','username','birth_date'];
+        $sets = []; $vals = [];
+        foreach ($allowed as $f) { if (isset($input[$f])) { $sets[] = "$f=?"; $vals[] = $input[$f]; } }
+        if ($sets) { $vals[] = $uid; $pdo->prepare('UPDATE users SET '.implode(',',$sets).' WHERE id=?')->execute($vals); }
+        echo json_encode(['success' => true, 'message' => 'Profile updated.', 'data' => find_user_by_id($pdo, $uid)]); exit;
+    }
+    if ($sub === 'favorites' && $method === 'GET') {
+        $s = $pdo->prepare('SELECT b.* FROM businesses b JOIN favorites f ON f.business_id=b.id WHERE f.user_id=? ORDER BY f.created_at DESC'); $s->execute([$uid]);
+        $rows = $s->fetchAll(); echo json_encode(['success' => true, 'data' => $rows, 'count' => count($rows)]); exit;
+    }
+    if ($sub === 'visited' && $method === 'GET') {
+        $s = $pdo->prepare('SELECT b.* FROM businesses b JOIN visits v ON v.business_id=b.id WHERE v.user_id=? ORDER BY v.visited_at DESC'); $s->execute([$uid]);
+        echo json_encode(['success' => true, 'data' => $s->fetchAll()]); exit;
+    }
+    if ($sub === 'visit' && $method === 'POST') {
+        $bizId = (int)($input['businessId'] ?? 0);
+        if (!$bizId) { http_response_code(400); echo json_encode(['success' => false, 'message' => 'businessId required.']); exit; }
+        try { $pdo->prepare('INSERT INTO visits (user_id,business_id) VALUES (?,?)')->execute([$uid, $bizId]); echo json_encode(['success' => true, 'message' => 'Check-in recorded!']); }
+        catch (PDOException $e) { echo json_encode(['success' => true, 'message' => 'Already checked in.', 'already_visited' => true]); }
+        exit;
+    }
+    if ($sub === 'reviews' && $method === 'GET') {
+        $s = $pdo->prepare('SELECT r.*,b.name as business_name FROM reviews r JOIN businesses b ON r.business_id=b.id WHERE r.user_id=? ORDER BY r.created_at DESC'); $s->execute([$uid]);
+        echo json_encode(['success' => true, 'data' => $s->fetchAll()]); exit;
+    }
+    if ($sub === 'stats' && $method === 'GET') {
+        $s = $pdo->prepare('SELECT (SELECT COUNT(*) FROM reviews WHERE user_id=?) as reviews,(SELECT COUNT(*) FROM favorites WHERE user_id=?) as favorites,(SELECT COUNT(*) FROM visits WHERE user_id=?) as visits'); $s->execute([$uid,$uid,$uid]);
+        echo json_encode(['success' => true, 'data' => $s->fetch()]); exit;
     }
 }
 
 // ── NOTIFICATIONS ─────────────────────────────────────────────────────────────
-if ($group === 'notifications') {
-    $userId = requireAuth();
-
-    // GET /api/notifications
-    if ($action === '' && method() === 'GET') {
-        $limit  = (int)($_GET['limit'] ?? 20);
-        $offset = (int)($_GET['offset'] ?? 0);
-        $s = db()->prepare('SELECT * FROM notifications WHERE user_id=? ORDER BY created_at DESC LIMIT ? OFFSET ?');
-        $s->execute([$userId, $limit, $offset]);
-        $unread = db()->prepare('SELECT COUNT(*) as c FROM notifications WHERE user_id=? AND is_read=0');
-        $unread->execute([$userId]);
-        respond(['success' => true, 'data' => $s->fetchAll(), 'unreadCount' => $unread->fetch()['c']]);
+if ($base === 'notifications') {
+    $uid = require_auth($JWT_SECRET);
+    if ($sub === '' && $method === 'GET') {
+        $lim = (int)($_GET['limit'] ?? 20); $off = (int)($_GET['offset'] ?? 0);
+        $s = $pdo->prepare('SELECT * FROM notifications WHERE user_id=? ORDER BY created_at DESC LIMIT ? OFFSET ?'); $s->execute([$uid,$lim,$off]);
+        $u = $pdo->prepare('SELECT COUNT(*) as c FROM notifications WHERE user_id=? AND is_read=0'); $u->execute([$uid]);
+        echo json_encode(['success' => true, 'data' => $s->fetchAll(), 'unreadCount' => $u->fetch()['c']]); exit;
     }
-
-    // PATCH /api/notifications/:id/read
-    if ($action && $param === 'read' && method() === 'PATCH') {
-        db()->prepare('UPDATE notifications SET is_read=1 WHERE id=? AND user_id=?')->execute([(int)$action, $userId]);
-        respond(['success' => true, 'message' => 'Notification marked as read.']);
+    if ($sub === 'read-all') {
+        $pdo->prepare('UPDATE notifications SET is_read=1 WHERE user_id=?')->execute([$uid]);
+        echo json_encode(['success' => true, 'message' => 'All marked as read.']); exit;
     }
-
-    // PATCH /api/notifications/read-all
-    if ($action === 'read-all' && method() === 'PATCH') {
-        db()->prepare('UPDATE notifications SET is_read=1 WHERE user_id=?')->execute([$userId]);
-        respond(['success' => true, 'message' => 'All notifications marked as read.']);
+    if (is_numeric($sub) && $subsub === 'read') {
+        $pdo->prepare('UPDATE notifications SET is_read=1 WHERE id=? AND user_id=?')->execute([(int)$sub, $uid]);
+        echo json_encode(['success' => true]); exit;
     }
 }
 
 // ── SEARCH ────────────────────────────────────────────────────────────────────
-if ($group === 'search') {
-    $q         = '%' . trim($_GET['q'] ?? '') . '%';
-    $category  = $_GET['category'] ?? null;
-    $city      = $_GET['city'] ?? null;
-    $minRating = (float)($_GET['minRating'] ?? 0);
-    $limit     = (int)($_GET['limit'] ?? 20);
-    $offset    = (int)($_GET['offset'] ?? 0);
-
-    $sql    = 'SELECT * FROM businesses WHERE is_active=1 AND (name LIKE ? OR description LIKE ? OR category LIKE ?)';
+if ($base === 'search') {
+    $q   = '%' . trim($_GET['q'] ?? '') . '%';
+    $cat = $_GET['category'] ?? null;
+    $city = $_GET['city'] ?? null;
+    $min = (float)($_GET['minRating'] ?? 0);
+    $lim = (int)($_GET['limit'] ?? 20);
+    $off = (int)($_GET['offset'] ?? 0);
+    $sql = 'SELECT * FROM businesses WHERE is_active=1 AND (name LIKE ? OR description LIKE ? OR category LIKE ?)';
     $params = [$q, $q, $q];
-    if ($category)  { $sql .= ' AND category=?'; $params[] = $category; }
-    if ($city)      { $sql .= ' AND city=?';     $params[] = $city; }
-    if ($minRating) { $sql .= ' AND rating>=?';  $params[] = $minRating; }
+    if ($cat)  { $sql .= ' AND category=?'; $params[] = $cat; }
+    if ($city) { $sql .= ' AND city=?'; $params[] = $city; }
+    if ($min)  { $sql .= ' AND rating>=?'; $params[] = $min; }
     $sql .= ' ORDER BY rating DESC LIMIT ? OFFSET ?';
-    $params[] = $limit;
-    $params[] = $offset;
-    $s = db()->prepare($sql);
-    $s->execute($params);
-    $results = $s->fetchAll();
-    respond(['success' => true, 'data' => $results, 'count' => count($results)]);
+    $params[] = $lim; $params[] = $off;
+    $s = $pdo->prepare($sql); $s->execute($params); $rows = $s->fetchAll();
+    echo json_encode(['success' => true, 'data' => $rows, 'count' => count($rows)]); exit;
 }
 
-// ── SOCIAL ROUTES ─────────────────────────────────────────────────────────────
-if ($group === 'social') {
-    $userId = requireAuth();
+// ── SOCIAL ────────────────────────────────────────────────────────────────────
+if ($base === 'social') {
+    $uid = require_auth($JWT_SECRET);
 
-    // POST /api/social/follow/:userId
-    if ($action === 'follow' && $param && method() === 'POST') {
-        $targetId = (int)$param;
-        if ($targetId === $userId) respond(['success' => false, 'message' => "You can't follow yourself."], 400);
-        db()->prepare('INSERT IGNORE INTO follows (follower_id,following_id) VALUES (?,?)')->execute([$userId, $targetId]);
-        respond(['success' => true, 'data' => ['is_following' => true]]);
+    if ($sub === 'follow' && is_numeric($subsub) && $method === 'POST') {
+        $tid = (int)$subsub;
+        if ($tid === $uid) { http_response_code(400); echo json_encode(['success' => false, 'message' => "Can't follow yourself."]); exit; }
+        $pdo->prepare('INSERT IGNORE INTO follows (follower_id,following_id) VALUES (?,?)')->execute([$uid, $tid]);
+        echo json_encode(['success' => true, 'data' => ['is_following' => true]]); exit;
     }
-
-    // DELETE /api/social/follow/:userId
-    if ($action === 'follow' && $param && method() === 'DELETE') {
-        $targetId = (int)$param;
-        db()->prepare('DELETE FROM follows WHERE follower_id=? AND following_id=?')->execute([$userId, $targetId]);
-        respond(['success' => true, 'data' => ['is_following' => false]]);
+    if ($sub === 'follow' && is_numeric($subsub) && $method === 'DELETE') {
+        $pdo->prepare('DELETE FROM follows WHERE follower_id=? AND following_id=?')->execute([$uid, (int)$subsub]);
+        echo json_encode(['success' => true, 'data' => ['is_following' => false]]); exit;
     }
-
-    // GET /api/social/users/:userId/followers
-    if ($action === 'users' && $param && is_numeric($param)) {
-        $targetId = (int)$param;
-        $sub      = $parts[4] ?? '';
-        if ($sub === 'followers') {
-            $s = db()->prepare('SELECT u.id,u.name,u.avatar_url,u.bio FROM follows f JOIN users u ON f.follower_id=u.id WHERE f.following_id=? ORDER BY f.created_at DESC');
-            $s->execute([$targetId]);
-            respond(['success' => true, 'data' => $s->fetchAll()]);
-        }
-        if ($sub === 'following') {
-            $s = db()->prepare('SELECT u.id,u.name,u.avatar_url,u.bio FROM follows f JOIN users u ON f.following_id=u.id WHERE f.follower_id=? ORDER BY f.created_at DESC');
-            $s->execute([$targetId]);
-            respond(['success' => true, 'data' => $s->fetchAll()]);
-        }
-        // GET /api/social/users/:userId (public profile)
-        $s = db()->prepare('SELECT id,name,avatar_url,bio,level,points,is_verified,created_at FROM users WHERE id=?');
-        $s->execute([$targetId]);
-        $user = $s->fetch();
-        if (!$user) respond(['success' => false, 'message' => 'User not found.'], 404);
-        $followers = db()->prepare('SELECT COUNT(*) as c FROM follows WHERE following_id=?'); $followers->execute([$targetId]);
-        $following = db()->prepare('SELECT COUNT(*) as c FROM follows WHERE follower_id=?');  $following->execute([$targetId]);
-        $isFollowing = db()->prepare('SELECT COUNT(*) as c FROM follows WHERE follower_id=? AND following_id=?'); $isFollowing->execute([$userId, $targetId]);
-        $reviews = db()->prepare('SELECT r.*,b.name as business_name FROM reviews r JOIN businesses b ON r.business_id=b.id WHERE r.user_id=? ORDER BY r.created_at DESC LIMIT 20'); $reviews->execute([$targetId]);
-        respond(['success' => true, 'data' => ['user' => array_merge($user, ['followers' => $followers->fetch()['c'], 'following' => $following->fetch()['c']]), 'is_following' => (bool)$isFollowing->fetch()['c'], 'reviews' => $reviews->fetchAll()]]);
+    if ($sub === 'feed' && $method === 'GET') {
+        $lim = (int)($_GET['limit'] ?? 20); $off = (int)($_GET['offset'] ?? 0);
+        $s = $pdo->prepare('SELECT af.*,u.name as user_name,u.avatar_url,b.name as business_name,b.category,b.image_url FROM activity_feed af JOIN users u ON af.user_id=u.id JOIN businesses b ON af.business_id=b.id JOIN follows f ON f.follower_id=? AND f.following_id=af.user_id WHERE af.visibility="everyone" ORDER BY af.created_at DESC LIMIT ? OFFSET ?');
+        $s->execute([$uid,$lim,$off]); echo json_encode(['success' => true, 'data' => $s->fetchAll()]); exit;
     }
-
-    // GET /api/social/feed
-    if ($action === 'feed' && method() === 'GET') {
-        $limit  = (int)($_GET['limit'] ?? 20);
-        $offset = (int)($_GET['offset'] ?? 0);
-        $s = db()->prepare(
-            'SELECT af.*,u.name as user_name,u.avatar_url,b.name as business_name,b.category,b.image_url,b.rating as business_rating
-             FROM activity_feed af
-             JOIN users u ON af.user_id=u.id
-             JOIN businesses b ON af.business_id=b.id
-             JOIN follows f ON f.follower_id=? AND f.following_id=af.user_id
-             WHERE af.visibility="everyone"
-             ORDER BY af.created_at DESC LIMIT ? OFFSET ?'
-        );
-        $s->execute([$userId, $limit, $offset]);
-        respond(['success' => true, 'data' => $s->fetchAll()]);
+    if ($sub === 'privacy' && $method === 'GET') {
+        $s = $pdo->prepare('SELECT * FROM user_privacy WHERE user_id=?'); $s->execute([$uid]);
+        $p = $s->fetch();
+        if (!$p) { $pdo->prepare('INSERT IGNORE INTO user_privacy (user_id) VALUES (?)')->execute([$uid]); $p = ['user_id' => $uid]; }
+        echo json_encode(['success' => true, 'data' => $p]); exit;
     }
-
-    // GET /api/social/privacy
-    if ($action === 'privacy' && method() === 'GET') {
-        $s = db()->prepare('SELECT * FROM user_privacy WHERE user_id=?');
-        $s->execute([$userId]);
-        $priv = $s->fetch();
-        if (!$priv) {
-            db()->prepare('INSERT IGNORE INTO user_privacy (user_id) VALUES (?)')->execute([$userId]);
-            $priv = ['user_id' => $userId, 'activity_visibility' => 'everyone', 'reviews_visibility' => 'everyone'];
-        }
-        respond(['success' => true, 'data' => $priv]);
-    }
-
-    // PUT /api/social/privacy
-    if ($action === 'privacy' && in_array(method(), ['PUT', 'PATCH'])) {
-        $b       = body();
+    if ($sub === 'privacy' && ($method === 'PUT' || $method === 'PATCH')) {
         $allowed = ['activity_visibility','reviews_visibility','photos_visibility','visited_visibility','saved_visibility','followers_visibility'];
-        $sets    = [];
-        $vals    = [];
-        foreach ($allowed as $f) {
-            if (isset($b[$f])) { $sets[] = "$f=?"; $vals[] = $b[$f]; }
-        }
-        db()->prepare('INSERT IGNORE INTO user_privacy (user_id) VALUES (?)')->execute([$userId]);
-        if ($sets) { $vals[] = $userId; db()->prepare('UPDATE user_privacy SET ' . implode(',', $sets) . ' WHERE user_id=?')->execute($vals); }
-        respond(['success' => true, 'message' => 'Privacy updated.']);
+        $sets = []; $vals = [];
+        foreach ($allowed as $f) { if (isset($input[$f])) { $sets[] = "$f=?"; $vals[] = $input[$f]; } }
+        $pdo->prepare('INSERT IGNORE INTO user_privacy (user_id) VALUES (?)')->execute([$uid]);
+        if ($sets) { $vals[] = $uid; $pdo->prepare('UPDATE user_privacy SET '.implode(',',$sets).' WHERE user_id=?')->execute($vals); }
+        echo json_encode(['success' => true, 'message' => 'Privacy updated.']); exit;
     }
-
-    // GET /api/social/search-users
-    if ($action === 'search-users' && method() === 'GET') {
-        $q = '%' . trim($_GET['q'] ?? '') . '%';
-        $s = db()->prepare('SELECT id,name,avatar_url,bio FROM users WHERE name LIKE ? AND id!=? ORDER BY name LIMIT 30');
-        $s->execute([$q, $userId]);
-        respond(['success' => true, 'data' => $s->fetchAll()]);
+    if ($sub === 'search-users' && $method === 'GET') {
+        $q = '%'.trim($_GET['q'] ?? '').'%';
+        $s = $pdo->prepare('SELECT id,name,avatar_url,bio FROM users WHERE name LIKE ? AND id!=? ORDER BY name LIMIT 30'); $s->execute([$q,$uid]);
+        echo json_encode(['success' => true, 'data' => $s->fetchAll()]); exit;
+    }
+    if ($sub === 'users' && is_numeric($subsub)) {
+        $tid = (int)$subsub;
+        $sub4 = $parts[3] ?? '';
+        if ($sub4 === 'followers') {
+            $s = $pdo->prepare('SELECT u.id,u.name,u.avatar_url FROM follows f JOIN users u ON f.follower_id=u.id WHERE f.following_id=?'); $s->execute([$tid]);
+            echo json_encode(['success' => true, 'data' => $s->fetchAll()]); exit;
+        }
+        if ($sub4 === 'following') {
+            $s = $pdo->prepare('SELECT u.id,u.name,u.avatar_url FROM follows f JOIN users u ON f.following_id=u.id WHERE f.follower_id=?'); $s->execute([$tid]);
+            echo json_encode(['success' => true, 'data' => $s->fetchAll()]); exit;
+        }
+        $s = $pdo->prepare('SELECT id,name,avatar_url,bio,level,points,created_at FROM users WHERE id=?'); $s->execute([$tid]);
+        $user = $s->fetch();
+        if (!$user) { http_response_code(404); echo json_encode(['success' => false, 'message' => 'User not found.']); exit; }
+        $fc = $pdo->prepare('SELECT COUNT(*) as c FROM follows WHERE following_id=?'); $fc->execute([$tid]);
+        $ng = $pdo->prepare('SELECT COUNT(*) as c FROM follows WHERE follower_id=?');  $ng->execute([$tid]);
+        $if = $pdo->prepare('SELECT COUNT(*) as c FROM follows WHERE follower_id=? AND following_id=?'); $if->execute([$uid,$tid]);
+        $user['followers'] = $fc->fetch()['c']; $user['following'] = $ng->fetch()['c'];
+        echo json_encode(['success' => true, 'data' => ['user' => $user, 'is_following' => (bool)$if->fetch()['c']]]); exit;
     }
 }
 
-// ── OWNER ROUTES ──────────────────────────────────────────────────────────────
-if ($group === 'owner') {
-    $userId = requireAuth();
+// ── OWNER ─────────────────────────────────────────────────────────────────────
+if ($base === 'owner') {
+    $uid = require_auth($JWT_SECRET);
 
-    // GET /api/owner/businesses
-    if ($action === 'businesses' && $param === '' && method() === 'GET') {
-        $s = db()->prepare('SELECT * FROM businesses WHERE owner_id=? ORDER BY created_at DESC');
-        $s->execute([$userId]);
-        respond(['success' => true, 'data' => $s->fetchAll()]);
+    if ($sub === 'businesses' && $subsub === '' && $method === 'GET') {
+        $s = $pdo->prepare('SELECT * FROM businesses WHERE owner_id=? ORDER BY created_at DESC'); $s->execute([$uid]);
+        echo json_encode(['success' => true, 'data' => $s->fetchAll()]); exit;
     }
-
-    // POST /api/owner/businesses
-    if ($action === 'businesses' && $param === '' && method() === 'POST') {
-        $b = body();
-        if (!($b['name'] ?? '') || !($b['category'] ?? '') || !($b['address'] ?? '') || !($b['city'] ?? '')) {
-            respond(['success' => false, 'message' => 'Name, category, address and city are required.'], 400);
-        }
-        $s = db()->prepare('INSERT INTO businesses (name,category,description,address,city,phone,website,price_range,latitude,longitude,owner_id,is_active,status) VALUES (?,?,?,?,?,?,?,?,?,?,?,0,"pending")');
-        $s->execute([$b['name'], $b['category'], $b['description'] ?? null, $b['address'], $b['city'], $b['phone'] ?? null, $b['website'] ?? null, $b['price_range'] ?? null, $b['latitude'] ?? null, $b['longitude'] ?? null, $userId]);
-        respond(['success' => true, 'message' => 'Business submitted for review.', 'data' => ['id' => (int)db()->lastInsertId()]], 201);
+    if ($sub === 'businesses' && $subsub === '' && $method === 'POST') {
+        $b = $input;
+        if (!($b['name']??'') || !($b['category']??'') || !($b['address']??'') || !($b['city']??'')) { http_response_code(400); echo json_encode(['success' => false, 'message' => 'Name, category, address and city required.']); exit; }
+        $pdo->prepare('INSERT INTO businesses (name,category,description,address,city,phone,website,price_range,latitude,longitude,owner_id,is_active,status) VALUES (?,?,?,?,?,?,?,?,?,?,?,0,"pending")')
+            ->execute([$b['name'],$b['category'],$b['description']??null,$b['address'],$b['city'],$b['phone']??null,$b['website']??null,$b['price_range']??null,$b['latitude']??null,$b['longitude']??null,$uid]);
+        http_response_code(201); echo json_encode(['success' => true, 'message' => 'Business submitted.', 'data' => ['id' => (int)$pdo->lastInsertId()]]); exit;
     }
-
-    // GET /api/owner/businesses/:id
-    if ($action === 'businesses' && $param && method() === 'GET') {
-        $bizId = (int)$param;
-        $s = db()->prepare('SELECT * FROM businesses WHERE id=? AND owner_id=?');
-        $s->execute([$bizId, $userId]);
-        $biz = $s->fetch();
-        if (!$biz) respond(['success' => false, 'message' => 'Business not found.'], 404);
-        $hours = db()->prepare('SELECT * FROM business_hours WHERE business_id=?'); $hours->execute([$bizId]);
-        $photos = db()->prepare('SELECT * FROM photos WHERE business_id=?'); $photos->execute([$bizId]);
-        respond(['success' => true, 'data' => array_merge($biz, ['hours' => $hours->fetchAll(), 'photos' => $photos->fetchAll()])]);
+    if ($sub === 'businesses' && is_numeric($subsub) && $method === 'GET') {
+        $bizId = (int)$subsub;
+        $s = $pdo->prepare('SELECT * FROM businesses WHERE id=? AND owner_id=?'); $s->execute([$bizId,$uid]);
+        $biz = $s->fetch(); if (!$biz) { http_response_code(404); echo json_encode(['success' => false, 'message' => 'Not found.']); exit; }
+        $hrs = $pdo->prepare('SELECT * FROM business_hours WHERE business_id=?'); $hrs->execute([$bizId]);
+        $phs = $pdo->prepare('SELECT * FROM photos WHERE business_id=?'); $phs->execute([$bizId]);
+        echo json_encode(['success' => true, 'data' => array_merge($biz, ['hours' => $hrs->fetchAll(), 'photos' => $phs->fetchAll()])]); exit;
     }
-
-    // PUT /api/owner/businesses/:id
-    if ($action === 'businesses' && $param && in_array(method(), ['PUT', 'PATCH'])) {
-        $bizId = (int)$param;
-        $check = db()->prepare('SELECT id FROM businesses WHERE id=? AND owner_id=?'); $check->execute([$bizId, $userId]);
-        if (!$check->fetch()) respond(['success' => false, 'message' => 'Not authorized.'], 403);
-        $b = body();
-        db()->prepare('UPDATE businesses SET name=?,category=?,description=?,address=?,city=?,phone=?,website=?,price_range=?,latitude=?,longitude=? WHERE id=?')
-            ->execute([$b['name'], $b['category'], $b['description'] ?? null, $b['address'], $b['city'], $b['phone'] ?? null, $b['website'] ?? null, $b['price_range'] ?? null, $b['latitude'] ?? null, $b['longitude'] ?? null, $bizId]);
-        respond(['success' => true, 'message' => 'Business updated.']);
+    if ($sub === 'businesses' && is_numeric($subsub) && ($method === 'PUT' || $method === 'PATCH')) {
+        $bizId = (int)$subsub; $b = $input;
+        $chk = $pdo->prepare('SELECT id FROM businesses WHERE id=? AND owner_id=?'); $chk->execute([$bizId,$uid]);
+        if (!$chk->fetch()) { http_response_code(403); echo json_encode(['success' => false, 'message' => 'Not authorized.']); exit; }
+        $pdo->prepare('UPDATE businesses SET name=?,category=?,description=?,address=?,city=?,phone=?,website=?,price_range=?,latitude=?,longitude=? WHERE id=?')
+            ->execute([$b['name'],$b['category'],$b['description']??null,$b['address'],$b['city'],$b['phone']??null,$b['website']??null,$b['price_range']??null,$b['latitude']??null,$b['longitude']??null,$bizId]);
+        echo json_encode(['success' => true, 'message' => 'Updated.']); exit;
     }
 }
 
-// ── REVIEWS ROUTES ────────────────────────────────────────────────────────────
-if ($group === 'reviews') {
-    $userId = requireAuth();
-
-    // PUT /api/reviews/:id
-    if ($action && $param === '' && in_array(method(), ['PUT', 'PATCH'])) {
-        $reviewId = (int)$action;
-        $b = body();
-        $existing = db()->prepare('SELECT * FROM reviews WHERE id=? AND user_id=?'); $existing->execute([$reviewId, $userId]);
-        $rev = $existing->fetch();
-        if (!$rev) respond(['success' => false, 'message' => 'Review not found or unauthorized.'], 404);
-        db()->prepare('UPDATE reviews SET rating=?,title=?,content=? WHERE id=?')
-            ->execute([$b['rating'] ?? $rev['rating'], $b['title'] ?? $rev['title'], $b['content'] ?? $rev['content'], $reviewId]);
-        $avg = db()->prepare('SELECT AVG(rating) as avg,COUNT(*) as cnt FROM reviews WHERE business_id=?'); $avg->execute([$rev['business_id']]);
-        $r = $avg->fetch();
-        db()->prepare('UPDATE businesses SET rating=?,review_count=? WHERE id=?')->execute([round($r['avg'], 2), $r['cnt'], $rev['business_id']]);
-        respond(['success' => true, 'message' => 'Review updated.']);
+// ── REVIEWS ───────────────────────────────────────────────────────────────────
+if ($base === 'reviews' && is_numeric($sub)) {
+    $uid = require_auth($JWT_SECRET);
+    $rid = (int)$sub;
+    if ($method === 'PUT' || $method === 'PATCH') {
+        $ex = $pdo->prepare('SELECT * FROM reviews WHERE id=? AND user_id=?'); $ex->execute([$rid,$uid]); $rev = $ex->fetch();
+        if (!$rev) { http_response_code(404); echo json_encode(['success' => false, 'message' => 'Not found.']); exit; }
+        $pdo->prepare('UPDATE reviews SET rating=?,title=?,content=? WHERE id=?')->execute([$input['rating']??$rev['rating'],$input['title']??$rev['title'],$input['content']??$rev['content'],$rid]);
+        $avg = $pdo->prepare('SELECT AVG(rating) as a,COUNT(*) as c FROM reviews WHERE business_id=?'); $avg->execute([$rev['business_id']]);
+        $r = $avg->fetch(); $pdo->prepare('UPDATE businesses SET rating=?,review_count=? WHERE id=?')->execute([round($r['a'],2),$r['c'],$rev['business_id']]);
+        echo json_encode(['success' => true, 'message' => 'Updated.']); exit;
     }
-
-    // DELETE /api/reviews/:id
-    if ($action && $param === '' && method() === 'DELETE') {
-        $reviewId = (int)$action;
-        $existing = db()->prepare('SELECT * FROM reviews WHERE id=? AND user_id=?'); $existing->execute([$reviewId, $userId]);
-        $rev = $existing->fetch();
-        if (!$rev) respond(['success' => false, 'message' => 'Review not found or unauthorized.'], 404);
-        db()->prepare('DELETE FROM reviews WHERE id=?')->execute([$reviewId]);
-        $avg = db()->prepare('SELECT AVG(rating) as avg,COUNT(*) as cnt FROM reviews WHERE business_id=?'); $avg->execute([$rev['business_id']]);
-        $r = $avg->fetch();
-        db()->prepare('UPDATE businesses SET rating=?,review_count=? WHERE id=?')->execute([round($r['avg'] ?? 0, 2), $r['cnt'], $rev['business_id']]);
-        respond(['success' => true, 'message' => 'Review deleted.']);
+    if ($method === 'DELETE') {
+        $ex = $pdo->prepare('SELECT * FROM reviews WHERE id=? AND user_id=?'); $ex->execute([$rid,$uid]); $rev = $ex->fetch();
+        if (!$rev) { http_response_code(404); echo json_encode(['success' => false, 'message' => 'Not found.']); exit; }
+        $pdo->prepare('DELETE FROM reviews WHERE id=?')->execute([$rid]);
+        $avg = $pdo->prepare('SELECT AVG(rating) as a,COUNT(*) as c FROM reviews WHERE business_id=?'); $avg->execute([$rev['business_id']]);
+        $r = $avg->fetch(); $pdo->prepare('UPDATE businesses SET rating=?,review_count=? WHERE id=?')->execute([round($r['a']??0,2),$r['c'],$rev['business_id']]);
+        echo json_encode(['success' => true, 'message' => 'Deleted.']); exit;
     }
 }
 
 // ── 404 ───────────────────────────────────────────────────────────────────────
-respond(['success' => false, 'message' => 'Route not found: ' . $uri], 404);
+http_response_code(404);
+echo json_encode(['success' => false, 'message' => 'Route not found: /' . $base . '/' . $sub]);
