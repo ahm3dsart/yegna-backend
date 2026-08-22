@@ -130,14 +130,17 @@ function find_user_by_email($pdo, $email) {
     $s = $pdo->prepare('SELECT * FROM users WHERE email=?'); $s->execute([$email]); return $s->fetch() ?: null;
 }
 function find_user_by_username($pdo, $u) {
-    $s = $pdo->prepare('SELECT * FROM users WHERE username=?'); $s->execute([$u]); return $s->fetch() ?: null;
+    try { $s = $pdo->prepare('SELECT * FROM users WHERE username=?'); $s->execute([$u]); return $s->fetch() ?: null; }
+    catch (PDOException $e) { return null; }
 }
 function find_user_by_id($pdo, $id) {
-    $s = $pdo->prepare('SELECT id,name,username,email,phone,bio,avatar_url,role,points,level,is_verified,email_verified,birth_date,google_id,created_at FROM users WHERE id=?');
+    // Select only safe columns — username may not exist on older schema
+    $s = $pdo->prepare('SELECT id,name,email,phone,bio,avatar_url,role,points,level,is_verified,email_verified,birth_date,google_id,created_at FROM users WHERE id=?');
     $s->execute([$id]); return $s->fetch() ?: null;
 }
 function username_exists($pdo, $u) {
-    $s = $pdo->prepare('SELECT id FROM users WHERE username=?'); $s->execute([$u]); return (bool)$s->fetch();
+    try { $s = $pdo->prepare('SELECT id FROM users WHERE username=?'); $s->execute([$u]); return (bool)$s->fetch(); }
+    catch (PDOException $e) { return false; }
 }
 function validate_username($u) {
     if (strlen($u) < 3 || strlen($u) > 30) return 'Username must be 3-30 characters.';
@@ -147,8 +150,16 @@ function validate_username($u) {
 function create_user($pdo, $data) {
     $hash = null;
     if (!empty($data['password'])) $hash = password_hash($data['password'], PASSWORD_BCRYPT);
-    $s = $pdo->prepare('INSERT INTO users (name,username,email,password_hash,phone,birth_date,google_id,avatar_url,email_verified,role) VALUES (?,?,?,?,?,?,?,?,?,?)');
-    $s->execute([$data['name'], $data['username'] ?? null, $data['email'], $hash, $data['phone'] ?? null, $data['birth_date'] ?? null, $data['google_id'] ?? null, $data['avatar_url'] ?? null, $data['email_verified'] ?? 0, $data['role'] ?? 'user']);
+    // Check if username column exists
+    $has_username = false;
+    try { $pdo->query('SELECT username FROM users LIMIT 1'); $has_username = true; } catch (PDOException $e) {}
+    if ($has_username) {
+        $s = $pdo->prepare('INSERT INTO users (name,username,email,password_hash,phone,birth_date,google_id,avatar_url,email_verified,role) VALUES (?,?,?,?,?,?,?,?,?,?)');
+        $s->execute([$data['name'], $data['username'] ?? null, $data['email'], $hash, $data['phone'] ?? null, $data['birth_date'] ?? null, $data['google_id'] ?? null, $data['avatar_url'] ?? null, $data['email_verified'] ?? 0, $data['role'] ?? 'user']);
+    } else {
+        $s = $pdo->prepare('INSERT INTO users (name,email,password_hash,phone,birth_date,google_id,avatar_url,email_verified,role) VALUES (?,?,?,?,?,?,?,?,?)');
+        $s->execute([$data['name'], $data['email'], $hash, $data['phone'] ?? null, $data['birth_date'] ?? null, $data['google_id'] ?? null, $data['avatar_url'] ?? null, $data['email_verified'] ?? 0, $data['role'] ?? 'user']);
+    }
     return (int)$pdo->lastInsertId();
 }
 
