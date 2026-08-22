@@ -20,8 +20,8 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 define('DB_HOST', 'mysql-db02.remote');
 define('DB_PORT', 32636);
 define('DB_NAME', 'yegna');
-define('DB_USER', 'yegna_user');
-define('DB_PASS', 'xo235Kp4&');
+define('DB_USER', 'ahmed');
+define('DB_PASS', 'Uwk_9832i');
 define('JWT_SECRET', 'yegna_jwt_super_secret_2026');
 define('EMAIL_FROM', 'yegnaapp@gmail.com');
 define('EMAIL_PASS', 'ubaj ojjz ysyq ephd');
