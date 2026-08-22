@@ -158,7 +158,7 @@ function create_user($pdo, $data) {
 
 // ── HEALTH ────────────────────────────────────────────────────────────────────
 if ($base === 'health' || $base === '') {
-    echo json_encode(['status' => 'OK', 'timestamp' => date('c'), 'version' => '2.0.0', 'db' => 'connected']);
+    echo json_encode(['status' => 'OK', 'timestamp' => date('c'), 'version' => '2.0.0', 'db' => 'connected', 'debug' => ['base' => $base, 'sub' => $sub, 'subsub' => $subsub, 'uri' => $_SERVER['REQUEST_URI']]]);
     exit;
 }
 
@@ -325,15 +325,14 @@ if ($base === 'businesses') {
         $cat = $_GET['category'] ?? null;
         $city = $_GET['city'] ?? null;
         $min = (float)($_GET['minRating'] ?? 0);
-        $lim = (int)($_GET['limit'] ?? 30);
-        $off = (int)($_GET['offset'] ?? 0);
+        $lim = max(1, (int)($_GET['limit'] ?? 30));
+        $off = max(0, (int)($_GET['offset'] ?? 0));
         $sql = 'SELECT * FROM businesses WHERE is_active=1 AND (name LIKE ? OR description LIKE ? OR category LIKE ?)';
         $params = [$q, $q, $q];
         if ($cat)  { $sql .= ' AND category=?'; $params[] = $cat; }
         if ($city) { $sql .= ' AND city=?'; $params[] = $city; }
         if ($min)  { $sql .= ' AND rating>=?'; $params[] = $min; }
-        $sql .= ' ORDER BY rating DESC LIMIT ? OFFSET ?';
-        $params[] = $lim; $params[] = $off;
+        $sql .= ' ORDER BY rating DESC LIMIT ' . $lim . ' OFFSET ' . $off;
         $s = $pdo->prepare($sql); $s->execute($params); $rows = $s->fetchAll();
         echo json_encode(['success' => true, 'data' => $rows, 'count' => count($rows)]); exit;
     }
@@ -386,16 +385,15 @@ if ($base === 'businesses') {
         $city = $_GET['city'] ?? null;
         $search = $_GET['search'] ?? null;
         $min = (float)($_GET['minRating'] ?? 0);
-        $lim = (int)($_GET['limit'] ?? 20);
-        $off = (int)($_GET['offset'] ?? 0);
+        $lim = max(1, (int)($_GET['limit'] ?? 20));
+        $off = max(0, (int)($_GET['offset'] ?? 0));
         $sql = 'SELECT * FROM businesses WHERE is_active=1';
         $params = [];
         if ($cat)    { $sql .= ' AND category=?'; $params[] = $cat; }
         if ($city)   { $sql .= ' AND city=?'; $params[] = $city; }
         if ($search) { $sql .= ' AND (name LIKE ? OR description LIKE ?)'; $params[] = "%$search%"; $params[] = "%$search%"; }
         if ($min)    { $sql .= ' AND rating>=?'; $params[] = $min; }
-        $sql .= ' ORDER BY rating DESC LIMIT ? OFFSET ?';
-        $params[] = $lim; $params[] = $off;
+        $sql .= ' ORDER BY rating DESC LIMIT ' . $lim . ' OFFSET ' . $off;
         $s = $pdo->prepare($sql); $s->execute($params); $rows = $s->fetchAll();
         echo json_encode(['success' => true, 'data' => $rows, 'count' => count($rows)]); exit;
     }
