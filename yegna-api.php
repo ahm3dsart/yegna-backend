@@ -22,7 +22,7 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
 }
 
 // ── CONFIG ────────────────────────────────────────────────────────────────────
-define('DB_HOST', 'mysql-db02.remote');
+define('DB_HOST', 'mysql-db02.remote:32636');
 define('DB_PORT', 32636);
 define('DB_NAME', 'yegna');
 define('DB_USER', 'ahmed');
@@ -36,9 +36,10 @@ function db(): PDO {
     static $pdo = null;
     if ($pdo) return $pdo;
     try {
-        // Use same DSN format as VerifyPay which works on this server
+        // Same connection format as VerifyPay — host:port in host string
+        $host = DB_HOST; // already includes :32636
         $pdo = new PDO(
-            'mysql:host=' . DB_HOST . ';port=' . DB_PORT . ';dbname=' . DB_NAME . ';charset=utf8mb4',
+            "mysql:host=$host;dbname=" . DB_NAME . ";charset=utf8mb4",
             DB_USER, DB_PASS,
             [
                 PDO::ATTR_ERRMODE            => PDO::ERRMODE_EXCEPTION,
