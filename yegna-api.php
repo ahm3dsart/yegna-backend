@@ -5,6 +5,11 @@
  * Compatible with: PHP 8.x + PDO MySQL
  */
 
+// Show errors for debugging
+ini_set('display_errors', 0);
+ini_set('log_errors', 1);
+error_reporting(E_ALL);
+
 // ── CORS ──────────────────────────────────────────────────────────────────────
 header('Access-Control-Allow-Origin: *');
 header('Access-Control-Allow-Methods: GET, POST, PUT, PATCH, DELETE, OPTIONS');
@@ -420,6 +425,7 @@ if ($group === 'auth') {
 
 // ── BUSINESS ROUTES ───────────────────────────────────────────────────────────
 if ($group === 'businesses') {
+    try {
     $userId = optionalAuth();
 
     // GET /api/businesses/trending
@@ -546,7 +552,7 @@ if ($group === 'businesses') {
     }
 
     // GET /api/businesses (list with filters)
-    if ($action === '' && method() === 'GET') {
+    if (($action === '' || $action === null) && method() === 'GET') {
         $category  = $_GET['category'] ?? null;
         $city      = $_GET['city'] ?? null;
         $search    = $_GET['search'] ?? null;
