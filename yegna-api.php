@@ -466,9 +466,16 @@ if ($base === 'businesses') {
         $lat = (float)($_GET['lat'] ?? 0);
         $lng = (float)($_GET['lng'] ?? 0);
         $rad = (float)($_GET['radius'] ?? 10);
+        $cat = $_GET['category'] ?? null;
+        $lim = max(1, (int)($_GET['limit'] ?? 30));
+        $off = max(0, (int)($_GET['offset'] ?? 0));
         if (!$lat || !$lng) { http_response_code(400); echo json_encode(['success' => false, 'message' => 'lat and lng required.']); exit; }
-        $s = $pdo->prepare('SELECT *, (6371*acos(cos(radians(?))*cos(radians(latitude))*cos(radians(longitude)-radians(?))+sin(radians(?))*sin(radians(latitude)))) AS distance FROM businesses WHERE is_active=1 HAVING distance<? ORDER BY distance LIMIT 30');
-        $s->execute([$lat, $lng, $lat, $rad]);
+        $catClause = $cat ? ' AND category=?' : '';
+        $sql = 'SELECT *, (6371*acos(cos(radians(?))*cos(radians(latitude))*cos(radians(longitude)-radians(?))+sin(radians(?))*sin(radians(latitude)))) AS distance FROM businesses WHERE is_active=1' . $catClause . ' HAVING distance<? ORDER BY distance LIMIT ' . $lim . ' OFFSET ' . $off;
+        $params = [$lat, $lng, $lat];
+        if ($cat) $params[] = $cat;
+        $params[] = $rad;
+        $s = $pdo->prepare($sql); $s->execute($params);
         $rows = $s->fetchAll();
         echo json_encode(['success' => true, 'data' => $rows, 'count' => count($rows)]); exit;
     }
