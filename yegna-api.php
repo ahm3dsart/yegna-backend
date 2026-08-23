@@ -854,7 +854,22 @@ if ($base === 'owner') {
         exit;
     }
 
-    // DELETE /owner/businesses/:bizId/photos/:photoId
+    // PATCH /owner/businesses/:bizId/photos/:photoId/cover — set as cover
+    if ($sub === 'businesses' && is_numeric($subsub) && $subsub !== '' && $subsubid === 'photos' && isset($parts[4]) && is_numeric($parts[4]) && isset($parts[5]) && $parts[5] === 'cover' && $method === 'PATCH') {
+        $bizId   = (int)$subsub;
+        $photoId = (int)$parts[4];
+        $chk = $pdo->prepare('SELECT id FROM businesses WHERE id=? AND owner_id=?'); $chk->execute([$bizId,$uid]);
+        if (!$chk->fetch()) { http_response_code(403); echo json_encode(['success' => false, 'message' => 'Not authorized.']); exit; }
+        // Unset all primary, then set this one
+        $pdo->prepare('UPDATE photos SET is_primary=0 WHERE business_id=?')->execute([$bizId]);
+        $pdo->prepare('UPDATE photos SET is_primary=1 WHERE id=? AND business_id=?')->execute([$photoId, $bizId]);
+        // Update business cover image
+        $ph = $pdo->prepare('SELECT image_url FROM photos WHERE id=?'); $ph->execute([$photoId]);
+        $phRow = $ph->fetch();
+        if ($phRow) { $pdo->prepare('UPDATE businesses SET image_url=? WHERE id=?')->execute([$phRow['image_url'], $bizId]); }
+        echo json_encode(['success' => true, 'message' => 'Cover photo updated.']);
+        exit;
+    }
     if ($sub === 'businesses' && is_numeric($subsub) && $subsub !== '' && $subsubid === 'photos' && isset($parts[4]) && is_numeric($parts[4]) && $method === 'DELETE') {
         $bizId   = (int)$subsub;
         $photoId = (int)$parts[4];
