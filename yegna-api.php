@@ -164,12 +164,161 @@ function create_user($pdo, $data) {
 }
 
 // ══════════════════════════════════════════════════════════════════════════════
+// IMAGE UPLOAD HELPER
+// ══════════════════════════════════════════════════════════════════════════════
+
+/**
+ * Process and save an uploaded image file.
+ * - Validates MIME type using PHP image functions (not just extension)
+ * - Compresses ~40% using GD if available
+ * - Resizes iteratively until under $maxBytes
+ * - Returns ['url' => string] on success or throws RuntimeException on failure
+ */
+function upload_image(array $file, string $subdir, int $maxBytes = 2097152): array {
+    // ── 1. Basic upload error check ───────────────────────────────────────────
+    if ($file['error'] !== UPLOAD_ERR_OK) {
+        $errs = [
+            UPLOAD_ERR_INI_SIZE   => 'File exceeds server upload limit.',
+            UPLOAD_ERR_FORM_SIZE  => 'File exceeds form size limit.',
+            UPLOAD_ERR_PARTIAL    => 'File only partially uploaded.',
+            UPLOAD_ERR_NO_FILE    => 'No file was uploaded.',
+            UPLOAD_ERR_NO_TMP_DIR => 'Server missing temporary folder.',
+            UPLOAD_ERR_CANT_WRITE => 'Server failed to write file.',
+            UPLOAD_ERR_EXTENSION  => 'Upload blocked by server extension.',
+        ];
+        throw new RuntimeException($errs[$file['error']] ?? 'Upload error ' . $file['error']);
+    }
+
+    // ── 2. Validate it is actually an image (not just by extension) ───────────
+    $imgInfo = @getimagesize($file['tmp_name']);
+    if (!$imgInfo) {
+        throw new RuntimeException('Invalid image file. Only JPG, PNG, and WebP are accepted.');
+    }
+    $allowedMimes = ['image/jpeg', 'image/jpg', 'image/png', 'image/webp'];
+    if (!in_array($imgInfo['mime'], $allowedMimes, true)) {
+        throw new RuntimeException('Unsupported image type: ' . $imgInfo['mime'] . '. Use JPG, PNG, or WebP.');
+    }
+
+    // ── 3. Ensure upload directory exists ────────────────────────────────────
+    $baseDir    = __DIR__ . '/uploads/' . $subdir;
+    if (!is_dir($baseDir)) {
+        if (!mkdir($baseDir, 0755, true)) {
+            throw new RuntimeException('Could not create upload directory. Check server permissions.');
+        }
+    }
+
+    // ── 4. Generate a safe unique filename ───────────────────────────────────
+    $ext      = match ($imgInfo['mime']) {
+        'image/png'  => 'png',
+        'image/webp' => 'webp',
+        default      => 'jpg',
+    };
+    $filename = bin2hex(random_bytes(16)) . '_' . time() . '.' . $ext;
+    $destPath = $baseDir . '/' . $filename;
+
+    // ── 5. Try GD compression (40% quality reduction) ────────────────────────
+    $gdAvailable = function_exists('imagecreatefromjpeg') &&
+                   function_exists('imagecreatefrompng')  &&
+                   function_exists('imagejpeg');
+
+    if ($gdAvailable) {
+        // Load source image
+        $src = match ($imgInfo['mime']) {
+            'image/png'  => @imagecreatefrompng($file['tmp_name']),
+            'image/webp' => function_exists('imagecreatefromwebp')
+                              ? @imagecreatefromwebp($file['tmp_name'])
+                              : false,
+            default      => @imagecreatefromjpeg($file['tmp_name']),
+        };
+
+        if ($src !== false) {
+            $origW   = imagesx($src);
+            $origH   = imagesy($src);
+            $quality = 60; // ~40% reduction from typical 100% quality
+            $scale   = 1.0;
+
+            // Iteratively reduce until under maxBytes
+            for ($attempt = 0; $attempt < 6; $attempt++) {
+                $newW = (int)round($origW * $scale);
+                $newH = (int)round($origH * $scale);
+
+                // Create resized canvas
+                $dst = imagecreatetruecolor($newW, $newH);
+
+                // Preserve transparency for PNG
+                if ($imgInfo['mime'] === 'image/png') {
+                    imagealphablending($dst, false);
+                    imagesavealpha($dst, true);
+                    $transparent = imagecolorallocatealpha($dst, 255, 255, 255, 127);
+                    imagefilledrectangle($dst, 0, 0, $newW, $newH, $transparent);
+                }
+
+                imagecopyresampled($dst, $src, 0, 0, 0, 0, $newW, $newH, $origW, $origH);
+
+                // Save to temp buffer and check size
+                ob_start();
+                if ($imgInfo['mime'] === 'image/png') {
+                    imagepng($dst, null, 6); // compression 6 = good balance
+                } else {
+                    imagejpeg($dst, null, $quality);
+                }
+                $buf  = ob_get_clean();
+                $size = strlen($buf);
+                imagedestroy($dst);
+
+                if ($size <= $maxBytes) {
+                    // Write to final destination
+                    file_put_contents($destPath, $buf);
+                    imagedestroy($src);
+                    $publicUrl = 'https://verifypay.et/uploads/' . $subdir . '/' . $filename;
+                    return ['url' => $publicUrl, 'filename' => $filename, 'size' => $size];
+                }
+
+                // Still too big — reduce quality and scale
+                $quality = max(30, $quality - 10);
+                $scale  *= 0.75;
+            }
+            imagedestroy($src);
+            throw new RuntimeException('Image could not be compressed below 2 MB. Please use a smaller image.');
+        }
+    }
+
+    // ── 6. GD not available — just validate size and move ────────────────────
+    if ($file['size'] > $maxBytes) {
+        throw new RuntimeException('Image exceeds 2 MB. GD extension is not enabled on this server so automatic compression is unavailable. Please compress the image before uploading.');
+    }
+    if (!move_uploaded_file($file['tmp_name'], $destPath)) {
+        throw new RuntimeException('Failed to save uploaded file.');
+    }
+    $publicUrl = 'https://verifypay.et/uploads/' . $subdir . '/' . $filename;
+    return ['url' => $publicUrl, 'filename' => $filename, 'size' => $file['size']];
+}
+
+/**
+ * Delete an uploaded image file from disk safely.
+ * Only deletes files inside the uploads/ directory.
+ */
+function delete_upload_file(string $url): void {
+    // Extract relative path from URL
+    $prefix = 'https://verifypay.et/uploads/';
+    if (strpos($url, $prefix) !== 0) return; // not our file
+    $rel  = substr($url, strlen($prefix));
+    // Prevent path traversal
+    $rel  = ltrim(str_replace(['..', '//'], '', $rel), '/');
+    $path = __DIR__ . '/uploads/' . $rel;
+    if (is_file($path)) {
+        @unlink($path);
+    }
+}
+
+// ══════════════════════════════════════════════════════════════════════════════
 // ROUTES
 // ══════════════════════════════════════════════════════════════════════════════
 
 // ── HEALTH ────────────────────────────────────────────────────────────────────
 if ($base === 'health' || $base === '') {
-    echo json_encode(['status' => 'OK', 'timestamp' => date('c'), 'version' => '2.0.0', 'db' => 'connected', 'debug' => ['base' => $base, 'sub' => $sub, 'subsub' => $subsub, 'uri' => $_SERVER['REQUEST_URI']]]);
+    $gdOk = function_exists('imagecreatefromjpeg') && function_exists('imagejpeg');
+    echo json_encode(['status' => 'OK', 'timestamp' => date('c'), 'version' => '2.0.0', 'db' => 'connected', 'gd' => $gdOk ? 'enabled' : 'disabled', 'debug' => ['base' => $base, 'sub' => $sub, 'subsub' => $subsub, 'uri' => $_SERVER['REQUEST_URI']]]);
     exit;
 }
 
@@ -423,7 +572,32 @@ if ($base === 'user') {
         echo json_encode(['success' => true, 'data' => ['user' => $user, 'stats' => $st->fetch(), 'favorites' => $favs->fetchAll(), 'reviews' => $revs->fetchAll(), 'visited' => $vis->fetchAll()]]); exit;
     }
     if ($sub === 'profile' && ($method === 'PUT' || $method === 'PATCH')) {
-        $allowed = ['name','email','phone','bio','avatar_url','username','birth_date'];
+        // ── Handle avatar file upload ─────────────────────────────────────────
+        if (!empty($_FILES['avatar'])) {
+            try {
+                $result = upload_image($_FILES['avatar'], 'profile');
+                // Delete old avatar from disk
+                $oldUser = find_user_by_id($pdo, $uid);
+                if ($oldUser && !empty($oldUser['avatar_url'])) {
+                    delete_upload_file($oldUser['avatar_url']);
+                }
+                $pdo->prepare('UPDATE users SET avatar_url=? WHERE id=?')->execute([$result['url'], $uid]);
+                // Also apply any other text fields sent alongside
+                $textFields = ['name','phone','bio','username','birth_date'];
+                $sets = []; $vals = [];
+                foreach ($textFields as $f) {
+                    if (isset($_POST[$f])) { $sets[] = "$f=?"; $vals[] = $_POST[$f]; }
+                }
+                if ($sets) { $vals[] = $uid; $pdo->prepare('UPDATE users SET '.implode(',',$sets).' WHERE id=?')->execute($vals); }
+                echo json_encode(['success' => true, 'message' => 'Profile updated.', 'avatar_url' => $result['url'], 'data' => find_user_by_id($pdo, $uid)]);
+            } catch (RuntimeException $e) {
+                http_response_code(422);
+                echo json_encode(['success' => false, 'message' => $e->getMessage()]);
+            }
+            exit;
+        }
+        // ── JSON field update (no file) ───────────────────────────────────────
+        $allowed = ['name','email','phone','bio','avatar_url','username','birth_date','role'];
         $sets = []; $vals = [];
         foreach ($allowed as $f) { if (isset($input[$f])) { $sets[] = "$f=?"; $vals[] = $input[$f]; } }
         if ($sets) { $vals[] = $uid; $pdo->prepare('UPDATE users SET '.implode(',',$sets).' WHERE id=?')->execute($vals); }
@@ -451,6 +625,20 @@ if ($base === 'user') {
     if ($sub === 'stats' && $method === 'GET') {
         $s = $pdo->prepare('SELECT (SELECT COUNT(*) FROM reviews WHERE user_id=?) as reviews,(SELECT COUNT(*) FROM favorites WHERE user_id=?) as favorites,(SELECT COUNT(*) FROM visits WHERE user_id=?) as visits'); $s->execute([$uid,$uid,$uid]);
         echo json_encode(['success' => true, 'data' => $s->fetch()]); exit;
+    }
+    // POST /user/push-token — register Expo push token
+    if ($sub === 'push-token' && $method === 'POST') {
+        $token = trim($input['token'] ?? '');
+        if (!$token) { http_response_code(400); echo json_encode(['success' => false, 'message' => 'Token required.']); exit; }
+        // Store in a simple table (create if not exists)
+        try {
+            $pdo->exec('CREATE TABLE IF NOT EXISTS push_tokens (id INT PRIMARY KEY AUTO_INCREMENT, user_id INT NOT NULL UNIQUE, token VARCHAR(255) NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE)');
+            $pdo->prepare('INSERT INTO push_tokens (user_id, token) VALUES (?,?) ON DUPLICATE KEY UPDATE token=?, created_at=NOW()')->execute([$uid, $token, $token]);
+            echo json_encode(['success' => true, 'message' => 'Push token registered.']);
+        } catch (PDOException $e) {
+            echo json_encode(['success' => true, 'message' => 'Push token noted.']); // non-critical
+        }
+        exit;
     }
 }
 
@@ -583,6 +771,99 @@ if ($base === 'owner') {
             ->execute([$b['name'],$b['category'],$b['description']??null,$b['address'],$b['city'],$b['phone']??null,$b['website']??null,$b['price_range']??null,$b['latitude']??null,$b['longitude']??null,$bizId]);
         echo json_encode(['success' => true, 'message' => 'Updated.']); exit;
     }
+
+    // POST /owner/businesses/:id/photos — upload one or more photos
+    if ($sub === 'businesses' && is_numeric($subsub) && $subsub !== '' && $subsubid === 'photos' && $method === 'POST') {
+        $bizId = (int)$subsub;
+        // Verify ownership
+        $chk = $pdo->prepare('SELECT id FROM businesses WHERE id=? AND owner_id=?'); $chk->execute([$bizId,$uid]);
+        if (!$chk->fetch()) { http_response_code(403); echo json_encode(['success' => false, 'message' => 'Not authorized to upload photos for this business.']); exit; }
+
+        // Check existing photo count
+        $cntS = $pdo->prepare('SELECT COUNT(*) as c FROM photos WHERE business_id=?'); $cntS->execute([$bizId]);
+        $existingCount = (int)$cntS->fetch()['c'];
+
+        if (empty($_FILES)) { http_response_code(400); echo json_encode(['success' => false, 'message' => 'No files uploaded.']); exit; }
+
+        $uploaded = [];
+        $errors   = [];
+
+        // Handle both single file (photos) and multiple files (photos[])
+        $files = [];
+        if (isset($_FILES['photos'])) {
+            $f = $_FILES['photos'];
+            if (is_array($f['name'])) {
+                // Multiple files
+                for ($i = 0; $i < count($f['name']); $i++) {
+                    $files[] = ['name' => $f['name'][$i], 'type' => $f['type'][$i], 'tmp_name' => $f['tmp_name'][$i], 'error' => $f['error'][$i], 'size' => $f['size'][$i]];
+                }
+            } else {
+                $files[] = $f;
+            }
+        } elseif (isset($_FILES['photo'])) {
+            $files[] = $_FILES['photo'];
+        }
+
+        if (empty($files)) { http_response_code(400); echo json_encode(['success' => false, 'message' => 'No image files found in request. Use field name "photos" or "photo".']); exit; }
+
+        if ($existingCount + count($files) > 10) { http_response_code(400); echo json_encode(['success' => false, 'message' => 'Maximum 10 photos per business. Currently have ' . $existingCount . '.']); exit; }
+
+        foreach ($files as $i => $file) {
+            try {
+                $result    = upload_image($file, 'business');
+                $isPrimary = ($existingCount === 0 && $i === 0) ? 1 : 0;
+                $pdo->prepare('INSERT INTO photos (business_id, user_id, image_url, is_primary, uploaded_by) VALUES (?,?,?,?,?)')
+                    ->execute([$bizId, $uid, $result['url'], $isPrimary, $uid]);
+                $photoId    = (int)$pdo->lastInsertId();
+                // Update business image_url if this is the primary
+                if ($isPrimary) {
+                    $pdo->prepare('UPDATE businesses SET image_url=? WHERE id=?')->execute([$result['url'], $bizId]);
+                }
+                $uploaded[] = ['id' => $photoId, 'url' => $result['url'], 'is_primary' => $isPrimary];
+            } catch (RuntimeException $e) {
+                $errors[] = 'Photo ' . ($i + 1) . ': ' . $e->getMessage();
+            }
+        }
+
+        if (empty($uploaded)) {
+            http_response_code(422);
+            echo json_encode(['success' => false, 'message' => implode(' | ', $errors)]);
+        } else {
+            echo json_encode(['success' => true, 'message' => count($uploaded) . ' photo(s) uploaded.', 'data' => $uploaded, 'errors' => $errors]);
+        }
+        exit;
+    }
+
+    // DELETE /owner/businesses/:bizId/photos/:photoId
+    if ($sub === 'businesses' && is_numeric($subsub) && $subsub !== '' && $subsubid === 'photos' && isset($parts[4]) && is_numeric($parts[4]) && $method === 'DELETE') {
+        $bizId   = (int)$subsub;
+        $photoId = (int)$parts[4];
+        // Verify ownership
+        $chk = $pdo->prepare('SELECT id FROM businesses WHERE id=? AND owner_id=?'); $chk->execute([$bizId,$uid]);
+        if (!$chk->fetch()) { http_response_code(403); echo json_encode(['success' => false, 'message' => 'Not authorized.']); exit; }
+
+        $ps = $pdo->prepare('SELECT * FROM photos WHERE id=? AND business_id=?'); $ps->execute([$photoId,$bizId]);
+        $photo = $ps->fetch();
+        if (!$photo) { http_response_code(404); echo json_encode(['success' => false, 'message' => 'Photo not found.']); exit; }
+
+        // Delete file from disk
+        delete_upload_file($photo['image_url']);
+        $pdo->prepare('DELETE FROM photos WHERE id=?')->execute([$photoId]);
+
+        // If deleted photo was primary, promote next photo
+        if ($photo['is_primary']) {
+            $next = $pdo->prepare('SELECT id, image_url FROM photos WHERE business_id=? ORDER BY id ASC LIMIT 1'); $next->execute([$bizId]);
+            $nextPhoto = $next->fetch();
+            if ($nextPhoto) {
+                $pdo->prepare('UPDATE photos SET is_primary=1 WHERE id=?')->execute([$nextPhoto['id']]);
+                $pdo->prepare('UPDATE businesses SET image_url=? WHERE id=?')->execute([$nextPhoto['image_url'], $bizId]);
+            } else {
+                $pdo->prepare('UPDATE businesses SET image_url=NULL WHERE id=?')->execute([$bizId]);
+            }
+        }
+        echo json_encode(['success' => true, 'message' => 'Photo deleted.']);
+        exit;
+    }
 }
 
 // ── REVIEWS ───────────────────────────────────────────────────────────────────
@@ -604,6 +885,34 @@ if ($base === 'reviews' && is_numeric($sub)) {
         $avg = $pdo->prepare('SELECT AVG(rating) as a,COUNT(*) as c FROM reviews WHERE business_id=?'); $avg->execute([$rev['business_id']]);
         $r = $avg->fetch(); $pdo->prepare('UPDATE businesses SET rating=?,review_count=? WHERE id=?')->execute([round($r['a']??0,2),$r['c'],$rev['business_id']]);
         echo json_encode(['success' => true, 'message' => 'Deleted.']); exit;
+    }
+}
+
+// ── ADMIN ──────────────────────────────────────────────────────────────────────
+if ($base === 'admin') {
+    $uid = require_auth($JWT_SECRET);
+    // Verify admin role
+    $me = find_user_by_id($pdo, $uid);
+    if (!$me || $me['role'] !== 'admin') { http_response_code(403); echo json_encode(['success' => false, 'message' => 'Admin access required.']); exit; }
+
+    // GET /admin/businesses?status=pending|approved|rejected
+    if ($sub === 'businesses' && $method === 'GET') {
+        $status = $_GET['status'] ?? 'pending';
+        $lim    = max(1, (int)($_GET['limit'] ?? 50));
+        $off    = max(0, (int)($_GET['offset'] ?? 0));
+        $s = $pdo->prepare('SELECT b.*, u.name as owner_name FROM businesses b LEFT JOIN users u ON b.owner_id=u.id WHERE b.status=? ORDER BY b.created_at DESC LIMIT ' . $lim . ' OFFSET ' . $off);
+        $s->execute([$status]);
+        echo json_encode(['success' => true, 'data' => $s->fetchAll()]); exit;
+    }
+
+    // PATCH /admin/businesses/:id — approve or reject
+    if ($sub === 'businesses' && is_numeric($subsub) && $method === 'PATCH') {
+        $bizId  = (int)$subsub;
+        $status = $input['status'] ?? '';
+        if (!in_array($status, ['approved', 'rejected'], true)) { http_response_code(400); echo json_encode(['success' => false, 'message' => 'status must be approved or rejected.']); exit; }
+        $isActive = $status === 'approved' ? 1 : 0;
+        $pdo->prepare('UPDATE businesses SET status=?, is_active=? WHERE id=?')->execute([$status, $isActive, $bizId]);
+        echo json_encode(['success' => true, 'message' => 'Business ' . $status . '.']); exit;
     }
 }
 
