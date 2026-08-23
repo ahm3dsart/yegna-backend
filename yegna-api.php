@@ -750,6 +750,19 @@ if ($base === 'social') {
 // ── OWNER ─────────────────────────────────────────────────────────────────────
 if ($base === 'owner') {
     $uid = require_auth($JWT_SECRET);
+    // Role guard — only business_owner or admin can use owner routes
+    try {
+        $roleRow = $pdo->prepare('SELECT role FROM users WHERE id=?');
+        $roleRow->execute([$uid]);
+        $userRole = ($roleRow->fetch())['role'] ?? 'user';
+    } catch (PDOException $e) {
+        $userRole = 'user';
+    }
+    if (!in_array($userRole, ['business_owner', 'admin'], true)) {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'message' => 'Business owner account required. Upgrade your account in Settings.']);
+        exit;
+    }
 
     if ($sub === 'businesses' && $subsub === '' && $method === 'GET') {
         $s = $pdo->prepare('SELECT * FROM businesses WHERE owner_id=? ORDER BY created_at DESC'); $s->execute([$uid]);
