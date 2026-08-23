@@ -652,8 +652,10 @@ if ($base === 'user') {
 if ($base === 'notifications') {
     $uid = require_auth($JWT_SECRET);
     if ($sub === '' && $method === 'GET') {
-        $lim = (int)($_GET['limit'] ?? 20); $off = (int)($_GET['offset'] ?? 0);
-        $s = $pdo->prepare('SELECT * FROM notifications WHERE user_id=? ORDER BY created_at DESC LIMIT ? OFFSET ?'); $s->execute([$uid,$lim,$off]);
+        $lim = max(1, (int)($_GET['limit'] ?? 20));
+        $off = max(0, (int)($_GET['offset'] ?? 0));
+        $s = $pdo->prepare('SELECT * FROM notifications WHERE user_id=? ORDER BY created_at DESC LIMIT ' . $lim . ' OFFSET ' . $off);
+        $s->execute([$uid]);
         $u = $pdo->prepare('SELECT COUNT(*) as c FROM notifications WHERE user_id=? AND is_read=0'); $u->execute([$uid]);
         echo json_encode(['success' => true, 'data' => $s->fetchAll(), 'unreadCount' => $u->fetch()['c']]); exit;
     }
@@ -673,15 +675,14 @@ if ($base === 'search') {
     $cat = $_GET['category'] ?? null;
     $city = $_GET['city'] ?? null;
     $min = (float)($_GET['minRating'] ?? 0);
-    $lim = (int)($_GET['limit'] ?? 20);
-    $off = (int)($_GET['offset'] ?? 0);
+    $lim = max(1, (int)($_GET['limit'] ?? 20));
+    $off = max(0, (int)($_GET['offset'] ?? 0));
     $sql = 'SELECT * FROM businesses WHERE is_active=1 AND (name LIKE ? OR description LIKE ? OR category LIKE ?)';
     $params = [$q, $q, $q];
     if ($cat)  { $sql .= ' AND category=?'; $params[] = $cat; }
     if ($city) { $sql .= ' AND city=?'; $params[] = $city; }
     if ($min)  { $sql .= ' AND rating>=?'; $params[] = $min; }
-    $sql .= ' ORDER BY rating DESC LIMIT ? OFFSET ?';
-    $params[] = $lim; $params[] = $off;
+    $sql .= ' ORDER BY rating DESC LIMIT ' . $lim . ' OFFSET ' . $off;
     $s = $pdo->prepare($sql); $s->execute($params); $rows = $s->fetchAll();
     echo json_encode(['success' => true, 'data' => $rows, 'count' => count($rows)]); exit;
 }
