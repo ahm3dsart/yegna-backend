@@ -5,779 +5,481 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Yegna Admin — Business Review</title>
 <style>
-  *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
-
-  :root {
-    --primary: #FE4A49;
-    --primary-light: #fff0f0;
-    --green: #22C55E;
-    --green-light: #f0fdf4;
-    --amber: #F59E0B;
-    --amber-light: #fffbeb;
-    --red: #EF4444;
-    --red-light: #fef2f2;
-    --gray-50: #F9FAFB;
-    --gray-100: #F3F4F6;
-    --gray-200: #E5E7EB;
-    --gray-400: #9CA3AF;
-    --gray-600: #4B5563;
-    --gray-700: #374151;
-    --gray-900: #111827;
-    --radius: 14px;
-    --shadow: 0 2px 16px rgba(0,0,0,0.08);
-    --shadow-lg: 0 8px 32px rgba(0,0,0,0.12);
+  *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+  :root{
+    --primary:#FE4A49;--green:#22C55E;--amber:#F59E0B;--red:#EF4444;--purple:#7C3AED;
+    --gray-50:#F9FAFB;--gray-100:#F3F4F6;--gray-200:#E5E7EB;--gray-300:#D1D5DB;
+    --gray-400:#9CA3AF;--gray-600:#4B5563;--gray-700:#374151;--gray-900:#111827;
+    --radius:16px;--shadow:0 2px 12px rgba(0,0,0,.07);--shadow-lg:0 8px 32px rgba(0,0,0,.13);
   }
-
-  body {
-    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
-    background: var(--gray-50);
-    color: var(--gray-900);
-    min-height: 100vh;
-  }
+  body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;background:var(--gray-50);color:var(--gray-900);min-height:100vh}
 
   /* ── Topbar ── */
-  .topbar {
-    background: #fff;
-    border-bottom: 1px solid var(--gray-200);
-    padding: 0 24px;
-    height: 64px;
-    display: flex;
-    align-items: center;
-    justify-content: space-between;
-    position: sticky;
-    top: 0;
-    z-index: 100;
-    box-shadow: 0 1px 8px rgba(0,0,0,0.06);
-  }
-  .topbar-left { display: flex; align-items: center; gap: 12px; }
-  .logo {
-    width: 36px; height: 36px; border-radius: 10px;
-    background: var(--primary); display: flex; align-items: center; justify-content: center;
-  }
-  .logo svg { width: 20px; height: 20px; fill: #fff; }
-  .app-name { font-size: 18px; font-weight: 800; color: var(--gray-900); }
-  .app-sub  { font-size: 12px; color: var(--gray-400); font-weight: 500; }
-  .topbar-right { display: flex; align-items: center; gap: 12px; }
-  .user-pill {
-    display: flex; align-items: center; gap: 8px;
-    background: var(--gray-100); padding: 6px 14px; border-radius: 20px;
-  }
-  .user-avatar {
-    width: 28px; height: 28px; border-radius: 50%;
-    background: var(--primary); color: #fff;
-    display: flex; align-items: center; justify-content: center;
-    font-size: 12px; font-weight: 700;
-  }
-  .user-name { font-size: 13px; font-weight: 600; }
-  .btn-logout {
-    background: none; border: 1px solid var(--gray-200); padding: 6px 14px;
-    border-radius: 8px; cursor: pointer; font-size: 13px; color: var(--gray-600);
-    font-weight: 500; transition: all 0.15s;
-  }
-  .btn-logout:hover { background: var(--gray-100); }
+  .topbar{background:#fff;border-bottom:1px solid var(--gray-200);padding:0 24px;height:64px;display:flex;align-items:center;justify-content:space-between;position:sticky;top:0;z-index:100;box-shadow:0 1px 8px rgba(0,0,0,.05)}
+  .logo-wrap{display:flex;align-items:center;gap:12px}
+  .logo{width:38px;height:38px;border-radius:10px;background:var(--primary);display:flex;align-items:center;justify-content:center;color:#fff;font-size:20px}
+  .app-name{font-size:18px;font-weight:800}
+  .app-sub{font-size:11px;color:var(--gray-400);font-weight:500}
+  .user-pill{display:flex;align-items:center;gap:8px;background:var(--gray-100);padding:6px 14px;border-radius:20px}
+  .user-av{width:28px;height:28px;border-radius:50%;background:var(--primary);color:#fff;display:flex;align-items:center;justify-content:center;font-size:11px;font-weight:800}
+  .btn-sm{padding:7px 16px;border-radius:8px;border:1.5px solid var(--gray-200);background:none;cursor:pointer;font-size:13px;font-weight:600;color:var(--gray-600);font-family:inherit;transition:all .15s}
+  .btn-sm:hover{background:var(--gray-100)}
 
-  /* ── Login screen ── */
-  .login-screen {
-    min-height: 100vh;
-    display: flex; align-items: center; justify-content: center;
-    background: linear-gradient(135deg, #fff5f5 0%, #fff 60%);
-  }
-  .login-card {
-    background: #fff;
-    border-radius: 24px;
-    padding: 48px 40px;
-    width: 100%; max-width: 400px;
-    box-shadow: var(--shadow-lg);
-    border: 1px solid var(--gray-200);
-  }
-  .login-logo {
-    width: 60px; height: 60px; border-radius: 16px;
-    background: var(--primary); display: flex; align-items: center; justify-content: center;
-    margin: 0 auto 20px;
-  }
-  .login-logo svg { width: 32px; height: 32px; fill: #fff; }
-  .login-title { font-size: 24px; font-weight: 800; text-align: center; margin-bottom: 6px; }
-  .login-sub   { font-size: 14px; color: var(--gray-400); text-align: center; margin-bottom: 32px; }
-  .form-group  { margin-bottom: 16px; }
-  .form-label  { font-size: 13px; font-weight: 600; color: var(--gray-700); margin-bottom: 6px; display: block; }
-  .form-input  {
-    width: 100%; padding: 12px 14px; border: 1.5px solid var(--gray-200);
-    border-radius: 12px; font-size: 14px; outline: none; transition: border-color 0.15s;
-    font-family: inherit;
-  }
-  .form-input:focus { border-color: var(--primary); }
-  .btn-primary {
-    width: 100%; padding: 14px; background: var(--primary); color: #fff;
-    border: none; border-radius: 12px; font-size: 15px; font-weight: 700;
-    cursor: pointer; transition: opacity 0.15s; font-family: inherit;
-  }
-  .btn-primary:hover { opacity: 0.9; }
-  .btn-primary:disabled { opacity: 0.5; cursor: not-allowed; }
-  .login-error {
-    background: var(--red-light); border: 1px solid #fecaca;
-    padding: 10px 14px; border-radius: 10px; font-size: 13px;
-    color: var(--red); margin-bottom: 16px; display: none;
-  }
+  /* ── Login ── */
+  .login-page{min-height:100vh;display:flex;align-items:center;justify-content:center;background:linear-gradient(135deg,#fff5f5,#fff 60%)}
+  .login-card{background:#fff;border-radius:24px;padding:48px 40px;width:100%;max-width:400px;box-shadow:var(--shadow-lg);border:1px solid var(--gray-200)}
+  .login-logo{width:64px;height:64px;border-radius:18px;background:var(--primary);display:flex;align-items:center;justify-content:center;font-size:32px;margin:0 auto 20px}
+  h1.login-title{font-size:24px;font-weight:800;text-align:center;margin-bottom:6px}
+  .login-sub{font-size:14px;color:var(--gray-400);text-align:center;margin-bottom:32px}
+  .label{font-size:13px;font-weight:600;color:var(--gray-700);margin-bottom:6px;display:block}
+  .input{width:100%;padding:12px 14px;border:1.5px solid var(--gray-200);border-radius:12px;font-size:14px;font-family:inherit;outline:none;transition:border-color .15s;margin-bottom:14px}
+  .input:focus{border-color:var(--primary)}
+  .btn-primary{width:100%;padding:14px;background:var(--primary);color:#fff;border:none;border-radius:12px;font-size:15px;font-weight:700;cursor:pointer;font-family:inherit;transition:opacity .15s}
+  .btn-primary:hover{opacity:.9}
+  .btn-primary:disabled{opacity:.5;cursor:not-allowed}
+  .login-err{background:#fef2f2;border:1px solid #fecaca;padding:10px 14px;border-radius:10px;font-size:13px;color:var(--red);margin-bottom:14px;display:none}
 
-  /* ── Main layout ── */
-  .main { display: none; }
-  .main.visible { display: block; }
-  .content { max-width: 1200px; margin: 0 auto; padding: 28px 24px; }
+  /* ── Main ── */
+  .main{display:none}
+  .main.on{display:block}
+  .content{max-width:1100px;margin:0 auto;padding:28px 20px}
 
-  /* ── Stats row ── */
-  .stats-grid {
-    display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
-    gap: 16px; margin-bottom: 28px;
-  }
-  .stat-card {
-    background: #fff; border-radius: var(--radius); padding: 20px;
-    border: 1px solid var(--gray-200);
-    border-left: 4px solid var(--primary);
-    box-shadow: var(--shadow);
-    display: flex; align-items: center; gap: 16px;
-  }
-  .stat-icon {
-    width: 48px; height: 48px; border-radius: 12px;
-    display: flex; align-items: center; justify-content: center;
-    font-size: 22px;
-  }
-  .stat-val  { font-size: 28px; font-weight: 800; line-height: 1; }
-  .stat-label{ font-size: 13px; color: var(--gray-400); font-weight: 500; margin-top: 4px; }
+  /* ── Stats ── */
+  .stats{display:grid;grid-template-columns:repeat(4,1fr);gap:14px;margin-bottom:28px}
+  .stat{background:#fff;border-radius:var(--radius);padding:18px 20px;border:1px solid var(--gray-200);box-shadow:var(--shadow);display:flex;align-items:center;gap:14px;border-left:4px solid var(--primary)}
+  .stat-ic{width:46px;height:46px;border-radius:12px;display:flex;align-items:center;justify-content:center;font-size:22px}
+  .stat-val{font-size:26px;font-weight:800;line-height:1}
+  .stat-lbl{font-size:12px;color:var(--gray-400);font-weight:500;margin-top:3px}
 
-  /* ── Filter tabs ── */
-  .filter-bar {
-    background: #fff; border-radius: var(--radius); padding: 6px;
-    display: inline-flex; gap: 4px; margin-bottom: 20px;
-    border: 1px solid var(--gray-200); box-shadow: var(--shadow);
-  }
-  .filter-tab {
-    padding: 8px 20px; border-radius: 10px; border: none;
-    cursor: pointer; font-size: 13px; font-weight: 600;
-    background: none; color: var(--gray-600); transition: all 0.15s;
-    font-family: inherit;
-  }
-  .filter-tab.active { background: var(--primary); color: #fff; }
-  .filter-tab:hover:not(.active) { background: var(--gray-100); }
-  .filter-count {
-    display: inline-flex; align-items: center; justify-content: center;
-    width: 20px; height: 20px; border-radius: 50%; font-size: 11px;
-    font-weight: 700; margin-left: 6px;
-    background: rgba(255,255,255,0.3);
-  }
-  .filter-tab:not(.active) .filter-count { background: var(--gray-200); color: var(--gray-700); }
+  /* ── Filters ── */
+  .filter-row{display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:12px;margin-bottom:20px}
+  .tabs{background:#fff;border-radius:12px;padding:5px;display:inline-flex;gap:4px;border:1px solid var(--gray-200);box-shadow:var(--shadow)}
+  .tab{padding:8px 18px;border-radius:8px;border:none;cursor:pointer;font-size:13px;font-weight:600;background:none;color:var(--gray-600);transition:all .15s;font-family:inherit;display:flex;align-items:center;gap:6px}
+  .tab.on{background:var(--primary);color:#fff}
+  .tab:hover:not(.on){background:var(--gray-100)}
+  .badge{display:inline-flex;align-items:center;justify-content:center;min-width:20px;height:20px;border-radius:10px;font-size:11px;font-weight:700;padding:0 5px;background:rgba(255,255,255,.25)}
+  .tab:not(.on) .badge{background:var(--gray-200);color:var(--gray-700)}
+  .btn-refresh{display:flex;align-items:center;gap:6px;padding:9px 16px;border-radius:10px;border:1.5px solid var(--gray-200);background:#fff;cursor:pointer;font-size:13px;font-weight:600;font-family:inherit;transition:all .15s}
+  .btn-refresh:hover{background:var(--gray-100)}
 
-  /* ── Business cards ── */
-  .biz-grid { display: grid; gap: 16px; }
-  .biz-card {
-    background: #fff; border-radius: var(--radius);
-    border: 1px solid var(--gray-200); box-shadow: var(--shadow);
-    overflow: hidden; transition: box-shadow 0.2s;
-  }
-  .biz-card:hover { box-shadow: var(--shadow-lg); }
-  .biz-card-inner { display: flex; gap: 0; }
-  .biz-img {
-    width: 140px; height: 140px; object-fit: cover; flex-shrink: 0;
-    background: var(--gray-100);
-  }
-  .biz-img-placeholder {
-    width: 140px; height: 140px; flex-shrink: 0;
-    background: var(--gray-100); display: flex; align-items: center; justify-content: center;
-    font-size: 40px; color: var(--gray-400);
-  }
-  .biz-info { padding: 16px 20px; flex: 1; min-width: 0; }
-  .biz-header { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 8px; }
-  .biz-name { font-size: 17px; font-weight: 700; color: var(--gray-900); }
-  .status-pill {
-    padding: 4px 12px; border-radius: 20px; font-size: 12px; font-weight: 700;
-    white-space: nowrap; flex-shrink: 0;
-  }
-  .status-pending  { background: var(--amber-light);  color: #92400E; }
-  .status-approved { background: var(--green-light);  color: #14532D; }
-  .status-rejected { background: var(--red-light);    color: #7F1D1D; }
-  .biz-meta { display: flex; flex-wrap: wrap; gap: 12px; margin-bottom: 10px; }
-  .meta-item { display: flex; align-items: center; gap: 5px; font-size: 13px; color: var(--gray-600); }
-  .biz-desc { font-size: 13px; color: var(--gray-400); line-height: 1.5; margin-bottom: 12px;
-    display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
-  .biz-actions { display: flex; gap: 8px; align-items: center; }
-  .btn-approve {
-    padding: 8px 18px; background: var(--green); color: #fff;
-    border: none; border-radius: 8px; font-size: 13px; font-weight: 700;
-    cursor: pointer; transition: opacity 0.15s; font-family: inherit;
-    display: flex; align-items: center; gap: 6px;
-  }
-  .btn-approve:hover { opacity: 0.88; }
-  .btn-reject {
-    padding: 8px 18px; background: none; color: var(--red);
-    border: 1.5px solid var(--red); border-radius: 8px; font-size: 13px; font-weight: 700;
-    cursor: pointer; transition: all 0.15s; font-family: inherit;
-    display: flex; align-items: center; gap: 6px;
-  }
-  .btn-reject:hover { background: var(--red-light); }
-  .btn-view-photos {
-    padding: 8px 14px; background: none; color: var(--gray-600);
-    border: 1.5px solid var(--gray-200); border-radius: 8px; font-size: 13px;
-    cursor: pointer; font-weight: 600; transition: all 0.15s; font-family: inherit;
-    display: flex; align-items: center; gap: 6px;
-  }
-  .btn-view-photos:hover { background: var(--gray-100); }
-  .rejected-reason {
-    font-size: 12px; color: var(--red); background: var(--red-light);
-    padding: 6px 10px; border-radius: 8px; margin-top: 8px;
-    display: flex; align-items: flex-start; gap: 6px;
-  }
+  /* ── Card ── */
+  .card{background:#fff;border-radius:var(--radius);border:1px solid var(--gray-200);box-shadow:var(--shadow);margin-bottom:18px;overflow:hidden;transition:box-shadow .2s}
+  .card:hover{box-shadow:var(--shadow-lg)}
 
-  /* ── Empty state ── */
-  .empty-state {
-    text-align: center; padding: 80px 20px;
-    color: var(--gray-400);
-  }
-  .empty-icon { font-size: 56px; margin-bottom: 16px; }
-  .empty-title { font-size: 18px; font-weight: 700; color: var(--gray-700); margin-bottom: 8px; }
-  .empty-sub { font-size: 14px; }
+  /* Photos row */
+  .photos-row{display:flex;gap:6px;padding:14px 16px 0;overflow-x:auto;scrollbar-width:none}
+  .photos-row::-webkit-scrollbar{display:none}
+  .photo-thumb{width:110px;height:80px;border-radius:10px;object-fit:cover;flex-shrink:0;cursor:pointer;transition:transform .15s;border:2px solid transparent}
+  .photo-thumb.cover{border-color:var(--primary)}
+  .photo-thumb:hover{transform:scale(1.04)}
+  .no-photo{width:110px;height:80px;border-radius:10px;background:var(--gray-100);display:flex;align-items:center;justify-content:center;font-size:28px;flex-shrink:0;color:var(--gray-400)}
+  .photos-count{font-size:11px;color:var(--gray-400);padding:4px 16px 10px;font-weight:500}
 
-  /* ── Loading ── */
-  .loading {
-    display: flex; align-items: center; justify-content: center;
-    padding: 80px; gap: 12px; color: var(--gray-400); font-size: 15px;
-  }
-  .spinner {
-    width: 24px; height: 24px; border: 3px solid var(--gray-200);
-    border-top-color: var(--primary); border-radius: 50%;
-    animation: spin 0.7s linear infinite;
-  }
-  @keyframes spin { to { transform: rotate(360deg); } }
+  /* Card body */
+  .card-body{padding:14px 16px 16px}
+  .card-header{display:flex;align-items:flex-start;justify-content:space-between;gap:12px;margin-bottom:10px}
+  .biz-name{font-size:17px;font-weight:800;color:var(--gray-900)}
+  .status-pill{padding:4px 12px;border-radius:20px;font-size:12px;font-weight:700;white-space:nowrap;flex-shrink:0}
+  .s-pending{background:#fffbeb;color:#92400E}
+  .s-approved{background:#f0fdf4;color:#14532D}
+  .s-rejected{background:#fef2f2;color:#7F1D1D}
 
-  /* ── Modal ── */
-  .modal-overlay {
-    position: fixed; inset: 0; background: rgba(0,0,0,0.5);
-    display: flex; align-items: center; justify-content: center;
-    z-index: 200; padding: 20px; display: none;
-  }
-  .modal-overlay.open { display: flex; }
-  .modal {
-    background: #fff; border-radius: 20px; padding: 32px;
-    width: 100%; max-width: 480px;
-    box-shadow: var(--shadow-lg); animation: modalIn 0.2s ease;
-  }
-  @keyframes modalIn {
-    from { transform: scale(0.92); opacity: 0; }
-    to   { transform: scale(1);    opacity: 1; }
-  }
-  .modal-title { font-size: 20px; font-weight: 800; margin-bottom: 8px; }
-  .modal-sub   { font-size: 14px; color: var(--gray-400); margin-bottom: 20px; }
-  .modal-label { font-size: 13px; font-weight: 600; color: var(--gray-700); margin-bottom: 6px; display: block; }
-  .modal-textarea {
-    width: 100%; padding: 12px 14px; border: 1.5px solid var(--gray-200);
-    border-radius: 12px; font-size: 14px; font-family: inherit;
-    resize: vertical; min-height: 100px; outline: none; transition: border-color 0.15s;
-  }
-  .modal-textarea:focus { border-color: var(--red); }
-  .modal-actions { display: flex; gap: 10px; margin-top: 20px; }
-  .btn-cancel {
-    flex: 1; padding: 12px; border: 1.5px solid var(--gray-200);
-    border-radius: 12px; background: none; font-size: 14px; font-weight: 600;
-    cursor: pointer; color: var(--gray-600); font-family: inherit; transition: all 0.15s;
-  }
-  .btn-cancel:hover { background: var(--gray-100); }
-  .btn-confirm-reject {
-    flex: 1; padding: 12px; background: var(--red); color: #fff;
-    border: none; border-radius: 12px; font-size: 14px; font-weight: 700;
-    cursor: pointer; font-family: inherit; transition: opacity 0.15s;
-  }
-  .btn-confirm-reject:hover { opacity: 0.88; }
+  .detail-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:8px;margin-bottom:12px}
+  .detail-item{display:flex;align-items:flex-start;gap:7px;font-size:13px;color:var(--gray-700)}
+  .detail-item span{color:var(--gray-400);flex-shrink:0}
+  .detail-val{word-break:break-word}
 
-  /* ── Photos modal ── */
-  .photos-grid {
-    display: grid; grid-template-columns: repeat(3, 1fr);
-    gap: 8px; margin-top: 16px; max-height: 400px; overflow-y: auto;
-  }
-  .photos-grid img {
-    width: 100%; aspect-ratio: 1; object-fit: cover; border-radius: 10px;
-    cursor: pointer; transition: transform 0.15s;
-  }
-  .photos-grid img:hover { transform: scale(1.03); }
+  .desc{font-size:13px;color:var(--gray-400);line-height:1.55;margin-bottom:12px;border-left:3px solid var(--gray-200);padding-left:10px}
+
+  /* Hours */
+  .hours-grid{display:flex;flex-wrap:wrap;gap:6px;margin-bottom:12px}
+  .hour-chip{font-size:11px;font-weight:600;padding:3px 9px;border-radius:8px;background:var(--gray-100);color:var(--gray-700)}
+  .hour-chip.closed{background:#fef2f2;color:var(--red)}
+
+  /* Actions */
+  .card-actions{display:flex;gap:8px;flex-wrap:wrap;align-items:center;padding-top:12px;border-top:1px solid var(--gray-100)}
+  .btn-approve{padding:9px 18px;background:var(--green);color:#fff;border:none;border-radius:9px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit;transition:opacity .15s;display:flex;align-items:center;gap:6px}
+  .btn-approve:hover{opacity:.88}
+  .btn-reject{padding:9px 18px;background:none;color:var(--red);border:1.5px solid var(--red);border-radius:9px;font-size:13px;font-weight:700;cursor:pointer;font-family:inherit;transition:all .15s;display:flex;align-items:center;gap:6px}
+  .btn-reject:hover{background:#fef2f2}
+  .btn-neutral{padding:9px 16px;background:none;color:var(--gray-600);border:1.5px solid var(--gray-200);border-radius:9px;font-size:13px;font-weight:600;cursor:pointer;font-family:inherit;transition:all .15s}
+  .btn-neutral:hover{background:var(--gray-100)}
+  .rejected-note{font-size:12px;color:var(--red);background:#fef2f2;padding:7px 12px;border-radius:8px;display:flex;align-items:flex-start;gap:6px;margin-top:8px}
+
+  /* ── Empty / loading ── */
+  .empty{text-align:center;padding:80px 20px;color:var(--gray-400)}
+  .empty-icon{font-size:52px;margin-bottom:14px}
+  .empty-title{font-size:18px;font-weight:700;color:var(--gray-700);margin-bottom:6px}
+  .loading{display:flex;align-items:center;justify-content:center;padding:80px;gap:12px;color:var(--gray-400)}
+  .spin{width:22px;height:22px;border:3px solid var(--gray-200);border-top-color:var(--primary);border-radius:50%;animation:spin .7s linear infinite}
+  @keyframes spin{to{transform:rotate(360deg)}}
+
+  /* ── Reject modal ── */
+  .overlay{position:fixed;inset:0;background:rgba(0,0,0,.5);display:none;align-items:center;justify-content:center;z-index:200;padding:20px}
+  .overlay.open{display:flex}
+  .modal{background:#fff;border-radius:22px;padding:32px;width:100%;max-width:480px;box-shadow:var(--shadow-lg);animation:pop .2s ease}
+  @keyframes pop{from{transform:scale(.9);opacity:0}to{transform:scale(1);opacity:1}}
+  .modal h2{font-size:20px;font-weight:800;margin-bottom:6px}
+  .modal p{font-size:14px;color:var(--gray-400);margin-bottom:20px}
+  textarea{width:100%;padding:12px 14px;border:1.5px solid var(--gray-200);border-radius:12px;font-size:14px;font-family:inherit;resize:vertical;min-height:100px;outline:none;transition:border-color .15s}
+  textarea:focus{border-color:var(--red)}
+  .modal-btns{display:flex;gap:10px;margin-top:18px}
+  .btn-cancel-md{flex:1;padding:13px;border:1.5px solid var(--gray-200);border-radius:12px;background:none;font-size:14px;font-weight:600;cursor:pointer;color:var(--gray-600);font-family:inherit}
+  .btn-cancel-md:hover{background:var(--gray-100)}
+  .btn-do-reject{flex:1;padding:13px;background:var(--red);color:#fff;border:none;border-radius:12px;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit;transition:opacity .15s}
+  .btn-do-reject:hover{opacity:.88}
+
+  /* ── Lightbox ── */
+  .lightbox{position:fixed;inset:0;background:rgba(0,0,0,.92);display:none;align-items:center;justify-content:center;z-index:300;cursor:zoom-out}
+  .lightbox.open{display:flex}
+  .lightbox img{max-width:92vw;max-height:90vh;border-radius:12px;box-shadow:0 0 80px rgba(0,0,0,.8)}
 
   /* ── Toast ── */
-  .toast {
-    position: fixed; bottom: 24px; left: 50%; transform: translateX(-50%) translateY(80px);
-    background: #1a1a1a; color: #fff; padding: 12px 24px;
-    border-radius: 24px; font-size: 14px; font-weight: 600;
-    box-shadow: var(--shadow-lg); z-index: 300;
-    transition: transform 0.3s cubic-bezier(0.34, 1.56, 0.64, 1);
-    display: flex; align-items: center; gap: 8px;
-  }
-  .toast.show { transform: translateX(-50%) translateY(0); }
-  .toast.success { background: #16A34A; }
-  .toast.error   { background: var(--red); }
+  .toast{position:fixed;bottom:24px;left:50%;transform:translateX(-50%) translateY(80px);background:#111;color:#fff;padding:12px 24px;border-radius:24px;font-size:14px;font-weight:600;box-shadow:var(--shadow-lg);z-index:400;transition:transform .3s cubic-bezier(.34,1.56,.64,1);display:flex;align-items:center;gap:8px}
+  .toast.show{transform:translateX(-50%) translateY(0)}
+  .toast.ok{background:var(--green)}
+  .toast.err{background:var(--red)}
 
-  /* ── Responsive ── */
-  @media (max-width: 600px) {
-    .biz-card-inner { flex-direction: column; }
-    .biz-img, .biz-img-placeholder { width: 100%; height: 200px; }
-    .stats-grid { grid-template-columns: repeat(2, 1fr); }
-    .topbar { padding: 0 16px; }
-    .content { padding: 20px 16px; }
+  @media(max-width:700px){
+    .stats{grid-template-columns:repeat(2,1fr)}
+    .topbar{padding:0 16px}
+    .content{padding:16px}
+    .detail-grid{grid-template-columns:1fr}
   }
 </style>
 </head>
 <body>
 
-<!-- ── Login screen ────────────────────────────────────────────────────────── -->
-<div class="login-screen" id="loginScreen">
+<!-- Login -->
+<div class="login-page" id="loginPage">
   <div class="login-card">
-    <div class="login-logo">
-      <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 14H9V8h2v8zm4 0h-2V8h2v8z"/></svg>
-    </div>
+    <div class="login-logo">🏪</div>
     <h1 class="login-title">Yegna Admin</h1>
-    <p class="login-sub">Sign in to review business listings</p>
-    <div class="login-error" id="loginError"></div>
-    <div class="form-group">
-      <label class="form-label">Email</label>
-      <input type="email" class="form-input" id="loginEmail" placeholder="admin@example.com" value="ahmedfeyselahmed1@gmail.com">
-    </div>
-    <div class="form-group">
-      <label class="form-label">Password</label>
-      <input type="password" class="form-input" id="loginPassword" placeholder="••••••••">
-    </div>
-    <button class="btn-primary" id="loginBtn" onclick="doLogin()">Sign In</button>
+    <p class="login-sub">Business Review Dashboard</p>
+    <div class="login-err" id="loginErr"></div>
+    <label class="label">Email</label>
+    <input class="input" id="iEmail" type="email" value="ahmedfeyselahmed1@gmail.com" placeholder="Email">
+    <label class="label">Password</label>
+    <input class="input" id="iPass" type="password" placeholder="Password" onkeydown="if(event.key==='Enter')login()">
+    <button class="btn-primary" id="loginBtn" onclick="login()">Sign In →</button>
   </div>
 </div>
 
-<!-- ── Main dashboard ──────────────────────────────────────────────────────── -->
-<div class="main" id="mainDashboard">
-  <!-- Topbar -->
+<!-- Dashboard -->
+<div class="main" id="dash">
   <div class="topbar">
-    <div class="topbar-left">
-      <div class="logo">
-        <svg viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm-1 14H9V8h2v8zm4 0h-2V8h2v8z"/></svg>
-      </div>
+    <div class="logo-wrap">
+      <div class="logo">🏪</div>
       <div>
         <div class="app-name">Yegna Admin</div>
-        <div class="app-sub">Business Review Dashboard</div>
+        <div class="app-sub">Business Review</div>
       </div>
     </div>
-    <div class="topbar-right">
+    <div style="display:flex;align-items:center;gap:10px">
       <div class="user-pill">
-        <div class="user-avatar" id="userInitials">A</div>
-        <span class="user-name" id="userName">Admin</span>
+        <div class="user-av" id="uAv">A</div>
+        <span style="font-size:13px;font-weight:600" id="uName">Admin</span>
       </div>
-      <button class="btn-logout" onclick="doLogout()">Sign out</button>
+      <button class="btn-sm" onclick="logout()">Sign out</button>
     </div>
   </div>
 
   <div class="content">
     <!-- Stats -->
-    <div class="stats-grid" id="statsGrid">
-      <div class="stat-card" style="border-left-color:#F59E0B">
-        <div class="stat-icon" style="background:#fffbeb">⏳</div>
-        <div>
-          <div class="stat-val" id="statPending">—</div>
-          <div class="stat-label">Pending Review</div>
-        </div>
+    <div class="stats">
+      <div class="stat" style="border-left-color:var(--amber)">
+        <div class="stat-ic" style="background:#fffbeb">⏳</div>
+        <div><div class="stat-val" id="sPending">—</div><div class="stat-lbl">Pending</div></div>
       </div>
-      <div class="stat-card" style="border-left-color:#22C55E">
-        <div class="stat-icon" style="background:#f0fdf4">✅</div>
-        <div>
-          <div class="stat-val" id="statApproved">—</div>
-          <div class="stat-label">Approved</div>
-        </div>
+      <div class="stat" style="border-left-color:var(--green)">
+        <div class="stat-ic" style="background:#f0fdf4">✅</div>
+        <div><div class="stat-val" id="sApproved">—</div><div class="stat-lbl">Approved</div></div>
       </div>
-      <div class="stat-card" style="border-left-color:#EF4444">
-        <div class="stat-icon" style="background:#fef2f2">❌</div>
-        <div>
-          <div class="stat-val" id="statRejected">—</div>
-          <div class="stat-label">Rejected</div>
-        </div>
+      <div class="stat" style="border-left-color:var(--red)">
+        <div class="stat-ic" style="background:#fef2f2">❌</div>
+        <div><div class="stat-val" id="sRejected">—</div><div class="stat-lbl">Rejected</div></div>
       </div>
-      <div class="stat-card" style="border-left-color:#6366F1">
-        <div class="stat-icon" style="background:#eff6ff">📊</div>
-        <div>
-          <div class="stat-val" id="statTotal">—</div>
-          <div class="stat-label">Total Listings</div>
-        </div>
+      <div class="stat" style="border-left-color:var(--purple)">
+        <div class="stat-ic" style="background:#f5f3ff">📊</div>
+        <div><div class="stat-val" id="sTotal">—</div><div class="stat-lbl">Total</div></div>
       </div>
     </div>
 
-    <!-- Filter tabs -->
-    <div style="display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px; margin-bottom:20px;">
-      <div class="filter-bar">
-        <button class="filter-tab active" onclick="setFilter('pending')"   id="tab-pending">⏳ Pending  <span class="filter-count" id="cnt-pending">0</span></button>
-        <button class="filter-tab"        onclick="setFilter('approved')"  id="tab-approved">✅ Approved <span class="filter-count" id="cnt-approved">0</span></button>
-        <button class="filter-tab"        onclick="setFilter('rejected')"  id="tab-rejected">❌ Rejected <span class="filter-count" id="cnt-rejected">0</span></button>
+    <!-- Filters -->
+    <div class="filter-row">
+      <div class="tabs">
+        <button class="tab on" id="t-pending"  onclick="setTab('pending')">⏳ Pending  <span class="badge" id="b-pending">0</span></button>
+        <button class="tab"    id="t-approved" onclick="setTab('approved')">✅ Approved <span class="badge" id="b-approved">0</span></button>
+        <button class="tab"    id="t-rejected" onclick="setTab('rejected')">❌ Rejected <span class="badge" id="b-rejected">0</span></button>
       </div>
-      <button class="btn-view-photos" onclick="loadData()" style="gap:6px">
-        🔄 Refresh
-      </button>
+      <button class="btn-refresh" onclick="loadAll()">🔄 Refresh</button>
     </div>
 
-    <!-- Business list -->
-    <div id="bizList"></div>
+    <!-- List -->
+    <div id="list"></div>
   </div>
 </div>
 
-<!-- ── Reject modal ────────────────────────────────────────────────────────── -->
-<div class="modal-overlay" id="rejectModal">
+<!-- Reject modal -->
+<div class="overlay" id="rejectModal">
   <div class="modal">
-    <h2 class="modal-title">Reject Business</h2>
-    <p class="modal-sub" id="rejectBizName">Are you sure you want to reject this business?</p>
-    <label class="modal-label">Reason for rejection <span style="color:#9CA3AF;font-weight:400">(required)</span></label>
-    <textarea class="modal-textarea" id="rejectReason" placeholder="e.g. Incomplete information, invalid address, inappropriate content…"></textarea>
-    <div class="modal-actions">
-      <button class="btn-cancel" onclick="closeRejectModal()">Cancel</button>
-      <button class="btn-confirm-reject" onclick="confirmReject()">❌ Reject Business</button>
+    <h2>Reject Business</h2>
+    <p id="rejectName">Provide a clear reason so the owner can make improvements.</p>
+    <label class="label">Rejection reason <span style="color:var(--gray-400);font-weight:400">(required)</span></label>
+    <textarea id="rejectReason" placeholder="e.g. Incomplete information, invalid phone number, unclear photos…"></textarea>
+    <div class="modal-btns">
+      <button class="btn-cancel-md" onclick="closeReject()">Cancel</button>
+      <button class="btn-do-reject" onclick="doReject()">❌ Reject Business</button>
     </div>
   </div>
 </div>
 
-<!-- ── Photos modal ────────────────────────────────────────────────────────── -->
-<div class="modal-overlay" id="photosModal">
-  <div class="modal" style="max-width:560px">
-    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
-      <h2 class="modal-title" style="margin:0" id="photosModalTitle">Business Photos</h2>
-      <button class="btn-cancel" style="flex:none;padding:8px 14px" onclick="closePhotosModal()">✕ Close</button>
-    </div>
-    <p style="font-size:13px;color:#9CA3AF" id="photosModalSub">Loading…</p>
-    <div class="photos-grid" id="photosGrid"></div>
-  </div>
+<!-- Lightbox -->
+<div class="lightbox" id="lb" onclick="closeLb()">
+  <img id="lbImg" src="" alt="">
 </div>
 
-<!-- ── Toast ────────────────────────────────────────────────────────────────── -->
+<!-- Toast -->
 <div class="toast" id="toast"></div>
 
 <script>
 const API = 'https://verifypay.et/yegna-api.php/api';
-let token = localStorage.getItem('admin_token') || '';
-let currentFilter = 'pending';
-let pendingRejectId = null;
-let allData = { pending: [], approved: [], rejected: [] };
+let token = localStorage.getItem('yt') || '';
+let tab   = 'pending';
+let data  = { pending:[], approved:[], rejected:[] };
+let rejectId = null;
 
-// ── Init ──────────────────────────────────────────────────────────────────────
+// ── Boot ──────────────────────────────────────────────────────────────────────
 window.onload = () => {
-  if (token) {
-    showDashboard();
-    loadData();
-  }
-  document.getElementById('loginPassword').addEventListener('keydown', e => {
-    if (e.key === 'Enter') doLogin();
-  });
+  if (token) { showDash(); loadAll(); }
 };
 
-// ── Auth ──────────────────────────────────────────────────────────────────────
-async function doLogin() {
-  const email    = document.getElementById('loginEmail').value.trim();
-  const password = document.getElementById('loginPassword').value;
-  const btn      = document.getElementById('loginBtn');
-  const errEl    = document.getElementById('loginError');
-
-  if (!email || !password) { showLoginError('Enter email and password.'); return; }
-
-  btn.textContent = 'Signing in…';
-  btn.disabled    = true;
-  errEl.style.display = 'none';
-
+// ── Login ─────────────────────────────────────────────────────────────────────
+async function login() {
+  const email = document.getElementById('iEmail').value.trim();
+  const pass  = document.getElementById('iPass').value;
+  const btn   = document.getElementById('loginBtn');
+  const err   = document.getElementById('loginErr');
+  if (!email||!pass) { showErr('Enter email and password.'); return; }
+  btn.textContent='Signing in…'; btn.disabled=true; err.style.display='none';
   try {
-    const res = await fetch(`${API}/auth/login`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ identifier: email, password }),
-    });
-    const data = await res.json();
-    if (!data.success) throw new Error(data.message || 'Login failed');
-    if (data.user.role !== 'admin') throw new Error('This account does not have admin access.');
-
-    token = data.token;
-    localStorage.setItem('admin_token', token);
-
-    const name = data.user.name || 'Admin';
-    document.getElementById('userName').textContent = name;
-    document.getElementById('userInitials').textContent = name.split(' ').map(n => n[0]).join('').slice(0,2).toUpperCase();
-
-    showDashboard();
-    loadData();
-  } catch (e) {
-    showLoginError(e.message);
-  } finally {
-    btn.textContent = 'Sign In';
-    btn.disabled    = false;
-  }
+    const r = await post('/auth/login',{identifier:email,password:pass});
+    if (!r.success) throw new Error(r.message||'Failed');
+    if (r.user.role !== 'admin') throw new Error('This account does not have admin access.');
+    token = r.token;
+    localStorage.setItem('yt', token);
+    const n = r.user.name||'Admin';
+    document.getElementById('uName').textContent = n;
+    document.getElementById('uAv').textContent   = n.split(' ').map(x=>x[0]).join('').slice(0,2).toUpperCase();
+    showDash(); loadAll();
+  } catch(e) { showErr(e.message); }
+  finally { btn.textContent='Sign In →'; btn.disabled=false; }
 }
-
-function doLogout() {
-  token = '';
-  localStorage.removeItem('admin_token');
-  document.getElementById('mainDashboard').classList.remove('visible');
-  document.getElementById('loginScreen').style.display = 'flex';
-}
-
-function showLoginError(msg) {
-  const el = document.getElementById('loginError');
-  el.textContent = msg;
-  el.style.display = 'block';
-}
-
-function showDashboard() {
-  document.getElementById('loginScreen').style.display = 'none';
-  document.getElementById('mainDashboard').classList.add('visible');
-}
+function showErr(m) { const e=document.getElementById('loginErr'); e.textContent=m; e.style.display='block'; }
+function logout() { token=''; localStorage.removeItem('yt'); document.getElementById('dash').classList.remove('on'); document.getElementById('loginPage').style.display='flex'; }
+function showDash() { document.getElementById('loginPage').style.display='none'; document.getElementById('dash').classList.add('on'); }
 
 // ── Data ──────────────────────────────────────────────────────────────────────
-async function loadData() {
-  showList('<div class="loading"><div class="spinner"></div> Loading businesses…</div>');
-
+async function loadAll() {
+  setList('<div class="loading"><div class="spin"></div> Loading…</div>');
   try {
-    const [pendingRes, approvedRes, rejectedRes] = await Promise.all([
-      fetchBiz('pending'), fetchBiz('approved'), fetchBiz('rejected'),
-    ]);
-
-    allData.pending  = pendingRes;
-    allData.approved = approvedRes;
-    allData.rejected = rejectedRes;
-
-    // Update counts
-    updateCounts();
-    renderList(currentFilter);
-  } catch (e) {
-    showList(`<div class="empty-state"><div class="empty-icon">⚠️</div><div class="empty-title">Failed to load</div><div class="empty-sub">${e.message}</div></div>`);
-  }
+    const [p,a,r] = await Promise.all([fetchTab('pending'),fetchTab('approved'),fetchTab('rejected')]);
+    data.pending=p; data.approved=a; data.rejected=r;
+    updateStats(); render(tab);
+  } catch(e) { setList(`<div class="empty"><div class="empty-icon">⚠️</div><div class="empty-title">Failed to load</div><p>${esc(e.message)}</p></div>`); }
 }
 
-async function fetchBiz(status) {
-  const res = await fetch(`${API}/admin/businesses?status=${status}&limit=100`, {
-    headers: { Authorization: `Bearer ${token}` },
-  });
-  if (res.status === 401) { doLogout(); throw new Error('Session expired.'); }
-  const data = await res.json();
-  if (!data.success) throw new Error(data.message || 'Failed');
-  return data.data || [];
+async function fetchTab(s) {
+  // First get the list with status
+  const r = await get(`/admin/businesses?status=${s}&limit=100`);
+  if (!r.success) throw new Error(r.message||'Error');
+  // For each business, also fetch full details (photos, hours, etc.)
+  const items = r.data||[];
+  const detailed = await Promise.all(items.map(async b => {
+    try {
+      const d = await get(`/businesses/${b.id}`);
+      return d.success ? { ...b, ...d.data } : b;
+    } catch { return b; }
+  }));
+  return detailed;
 }
 
-function updateCounts() {
-  const p = allData.pending.length;
-  const a = allData.approved.length;
-  const r = allData.rejected.length;
-
-  document.getElementById('statPending').textContent  = p;
-  document.getElementById('statApproved').textContent = a;
-  document.getElementById('statRejected').textContent = r;
-  document.getElementById('statTotal').textContent    = p + a + r;
-
-  document.getElementById('cnt-pending').textContent  = p;
-  document.getElementById('cnt-approved').textContent = a;
-  document.getElementById('cnt-rejected').textContent = r;
+function updateStats() {
+  const p=data.pending.length, a=data.approved.length, r=data.rejected.length;
+  document.getElementById('sPending').textContent  = p;
+  document.getElementById('sApproved').textContent = a;
+  document.getElementById('sRejected').textContent = r;
+  document.getElementById('sTotal').textContent    = p+a+r;
+  document.getElementById('b-pending').textContent  = p;
+  document.getElementById('b-approved').textContent = a;
+  document.getElementById('b-rejected').textContent = r;
 }
 
-function setFilter(f) {
-  currentFilter = f;
-  ['pending','approved','rejected'].forEach(s => {
-    document.getElementById(`tab-${s}`).classList.toggle('active', s === f);
-  });
-  renderList(f);
+function setTab(t) {
+  tab = t;
+  ['pending','approved','rejected'].forEach(s => document.getElementById(`t-${s}`).classList.toggle('on', s===t));
+  render(t);
 }
 
-function renderList(filter) {
-  const items = allData[filter] || [];
-  if (items.length === 0) {
+function render(t) {
+  const items = data[t]||[];
+  if (!items.length) {
     const msgs = {
-      pending:  { icon:'🎉', title:'All caught up!',         sub:'No businesses waiting for review.' },
-      approved: { icon:'📋', title:'No approved businesses', sub:'Approved businesses will appear here.' },
-      rejected: { icon:'✅', title:'No rejected businesses', sub:'Rejected businesses will appear here.' },
+      pending:  {ic:'🎉',ti:'All caught up!',sub:'No businesses waiting for review.'},
+      approved: {ic:'📋',ti:'No approved listings',sub:'Approved businesses will appear here.'},
+      rejected: {ic:'✅',ti:'No rejected listings',sub:'Rejected businesses will appear here.'},
     };
-    const m = msgs[filter];
-    showList(`<div class="empty-state"><div class="empty-icon">${m.icon}</div><div class="empty-title">${m.title}</div><div class="empty-sub">${m.sub}</div></div>`);
+    const m=msgs[t];
+    setList(`<div class="empty"><div class="empty-icon">${m.ic}</div><div class="empty-title">${m.ti}</div><p>${m.sub}</p></div>`);
     return;
   }
-
-  const html = items.map(b => renderBizCard(b, filter)).join('');
-  showList(`<div class="biz-grid">${html}</div>`);
+  setList(items.map(b=>card(b,t)).join(''));
 }
 
-function renderBizCard(b, filter) {
-  const statusPills = {
-    pending:  '<span class="status-pill status-pending">⏳ Under Review</span>',
-    approved: '<span class="status-pill status-approved">✅ Live</span>',
-    rejected: '<span class="status-pill status-rejected">❌ Rejected</span>',
-  };
+// ── Card ──────────────────────────────────────────────────────────────────────
+function card(b, t) {
+  // Photos strip
+  const photos = b.photos||[];
+  let photosHtml = '';
+  if (photos.length) {
+    const thumbs = photos.map(p=>`<img class="photo-thumb${p.is_primary?` cover`:''}" src="${esc(p.image_url)}" alt="photo" onclick="openLb('${esc(p.image_url)}')" title="${p.is_primary?'⭐ Cover photo':'Click to enlarge'}">`).join('');
+    photosHtml = `<div class="photos-row">${thumbs}</div><div class="photos-count">${photos.length} photo${photos.length>1?'s':''} — tap to enlarge · ⭐ = cover</div>`;
+  } else if (b.image_url) {
+    photosHtml = `<div class="photos-row"><img class="photo-thumb cover" src="${esc(b.image_url)}" alt="cover" onclick="openLb('${esc(b.image_url)}')"></div><div class="photos-count">1 photo</div>`;
+  } else {
+    photosHtml = `<div class="photos-row"><div class="no-photo">🏪</div></div><div class="photos-count" style="color:#F59E0B">No photos uploaded yet</div>`;
+  }
 
-  const imgHtml = b.image_url
-    ? `<img class="biz-img" src="${escHtml(b.image_url)}" alt="${escHtml(b.name)}" onerror="this.parentNode.innerHTML='<div class=\\"biz-img-placeholder\\">🏪</div>'">`
-    : `<div class="biz-img-placeholder">🏪</div>`;
+  // Status pill
+  const pills = {pending:'<span class="status-pill s-pending">⏳ Under Review</span>',approved:'<span class="status-pill s-approved">✅ Live</span>',rejected:'<span class="status-pill s-rejected">❌ Rejected</span>'};
 
-  const actions = filter === 'pending' ? `
-    <button class="btn-approve"       onclick="approveBiz(${b.id}, '${escHtml(b.name)}')">✅ Approve</button>
-    <button class="btn-reject"        onclick="openRejectModal(${b.id}, '${escHtml(b.name)}')">❌ Reject</button>
-    <button class="btn-view-photos"   onclick="viewPhotos(${b.id}, '${escHtml(b.name)}')">🖼 Photos</button>
-  ` : filter === 'approved' ? `
-    <button class="btn-reject"        onclick="openRejectModal(${b.id}, '${escHtml(b.name)}')">❌ Revoke</button>
-    <button class="btn-view-photos"   onclick="viewPhotos(${b.id}, '${escHtml(b.name)}')">🖼 Photos</button>
-  ` : `
-    <button class="btn-approve"       onclick="approveBiz(${b.id}, '${escHtml(b.name)}')">✅ Re-approve</button>
-    <button class="btn-view-photos"   onclick="viewPhotos(${b.id}, '${escHtml(b.name)}')">🖼 Photos</button>
-  `;
+  // Details grid
+  const details = [
+    {ic:'🏷️', v: b.category||'—'},
+    {ic:'📍', v: b.city ? `${b.city}${b.state?', '+b.state:''}` : '—'},
+    {ic:'📌', v: b.address||'—'},
+    {ic:'📞', v: b.phone ? `<a href="tel:${esc(b.phone)}" style="color:var(--primary);text-decoration:none">${esc(b.phone)}</a>` : '—'},
+    {ic:'🌐', v: b.website ? `<a href="https://${esc(b.website)}" target="_blank" style="color:var(--primary)">${esc(b.website)}</a>` : '—'},
+    {ic:'💰', v: b.price_range||'—'},
+    {ic:'👤', v: b.owner_id ? `Owner #${b.owner_id}` : '<span style="color:var(--amber)">⚠️ No owner</span>'},
+    {ic:'🗓️', v: fmtDate(b.created_at)},
+    {ic:'⭐', v: b.rating ? `${Number(b.rating).toFixed(1)} (${b.review_count||0} reviews)` : '—'},
+    {ic:'🗺️', v: b.latitude ? `${Number(b.latitude).toFixed(4)}, ${Number(b.longitude).toFixed(4)}` : '—'},
+  ].map(d=>`<div class="detail-item"><span>${d.ic}</span><div class="detail-val">${d.v}</div></div>`).join('');
 
-  const rejectedNote = filter === 'rejected' && b.rejection_reason ? `
-    <div class="rejected-reason">⚠️ ${escHtml(b.rejection_reason)}</div>
-  ` : '';
+  // Description
+  const descHtml = b.description ? `<div class="desc">${esc(b.description)}</div>` : '';
+
+  // Hours
+  let hoursHtml = '';
+  if (b.hours && b.hours.length) {
+    const chips = b.hours.map(h=>`<span class="hour-chip${h.is_closed?' closed':''}">${h.day_of_week.slice(0,3)}: ${h.is_closed?'Closed':`${h.open_time||'?'}–${h.close_time||'?'}`}</span>`).join('');
+    hoursHtml = `<div style="margin-bottom:10px"><div style="font-size:12px;font-weight:700;color:var(--gray-400);margin-bottom:6px;letter-spacing:.5px">BUSINESS HOURS</div><div class="hours-grid">${chips}</div></div>`;
+  }
+
+  // Actions
+  let actions = '';
+  if (t==='pending') {
+    actions = `<button class="btn-approve" onclick="approve(${b.id},'${esc(b.name)}')">✅ Approve</button><button class="btn-reject" onclick="openReject(${b.id},'${esc(b.name)}')">❌ Reject</button>`;
+  } else if (t==='approved') {
+    actions = `<button class="btn-reject" onclick="openReject(${b.id},'${esc(b.name)}')">❌ Revoke Approval</button>`;
+  } else {
+    actions = `<button class="btn-approve" onclick="approve(${b.id},'${esc(b.name)}')">✅ Re-approve</button>`;
+  }
+
+  const rejNote = t==='rejected' && b.rejection_reason
+    ? `<div class="rejected-note">⚠️ <span>${esc(b.rejection_reason)}</span></div>` : '';
 
   return `
-    <div class="biz-card" id="biz-${b.id}">
-      <div class="biz-card-inner">
-        ${imgHtml}
-        <div class="biz-info">
-          <div class="biz-header">
-            <div class="biz-name">${escHtml(b.name)}</div>
-            ${statusPills[filter] || ''}
-          </div>
-          <div class="biz-meta">
-            <span class="meta-item">🏷️ ${escHtml(b.category || '—')}</span>
-            <span class="meta-item">📍 ${escHtml(b.city || '—')}</span>
-            ${b.owner_id ? `<span class="meta-item">👤 Owner #${b.owner_id}</span>` : '<span class="meta-item" style="color:#F59E0B">⚠️ No owner</span>'}
-            <span class="meta-item" style="color:#9CA3AF">🗓 ${formatDate(b.created_at)}</span>
-          </div>
-          ${b.description ? `<div class="biz-desc">${escHtml(b.description)}</div>` : ''}
-          ${b.address ? `<div class="meta-item" style="font-size:12px;color:#9CA3AF;margin-bottom:10px">📌 ${escHtml(b.address)}</div>` : ''}
-          <div class="biz-actions">${actions}</div>
-          ${rejectedNote}
-        </div>
+  <div class="card" id="c-${b.id}">
+    ${photosHtml}
+    <div class="card-body">
+      <div class="card-header">
+        <div class="biz-name">${esc(b.name)}</div>
+        ${pills[t]||''}
       </div>
+      <div class="detail-grid">${details}</div>
+      ${descHtml}
+      ${hoursHtml}
+      ${rejNote}
+      <div class="card-actions">${actions}</div>
     </div>
-  `;
+  </div>`;
 }
 
 // ── Actions ───────────────────────────────────────────────────────────────────
-async function approveBiz(id, name) {
-  const card = document.getElementById(`biz-${id}`);
-  if (card) card.style.opacity = '0.5';
-
+async function approve(id, name) {
+  fade(id,.4);
   try {
-    const res = await fetch(`${API}/admin/businesses/${id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ status: 'approved' }),
-    });
-    const data = await res.json();
-    if (!data.success) throw new Error(data.message);
-    showToast(`✅ "${name}" approved and now live!`, 'success');
-    await loadData();
-  } catch (e) {
-    if (card) card.style.opacity = '1';
-    showToast(`Error: ${e.message}`, 'error');
-  }
+    const r = await patch(`/admin/businesses/${id}`,{status:'approved'});
+    if (!r.success) throw new Error(r.message);
+    toast(`✅ "${name}" is now live!`,'ok');
+    await loadAll();
+  } catch(e) { fade(id,1); toast(e.message,'err'); }
 }
 
-function openRejectModal(id, name) {
-  pendingRejectId = id;
-  document.getElementById('rejectBizName').textContent = `Rejecting: "${name}"`;
-  document.getElementById('rejectReason').value = '';
+function openReject(id, name) {
+  rejectId=id;
+  document.getElementById('rejectName').textContent=`Rejecting: "${name}"`;
+  document.getElementById('rejectReason').value='';
+  document.getElementById('rejectReason').style.borderColor='';
   document.getElementById('rejectModal').classList.add('open');
-  setTimeout(() => document.getElementById('rejectReason').focus(), 100);
+  setTimeout(()=>document.getElementById('rejectReason').focus(),100);
 }
+function closeReject() { document.getElementById('rejectModal').classList.remove('open'); rejectId=null; }
 
-function closeRejectModal() {
-  document.getElementById('rejectModal').classList.remove('open');
-  pendingRejectId = null;
-}
-
-async function confirmReject() {
-  const reason = document.getElementById('rejectReason').value.trim();
-  if (!reason) {
-    document.getElementById('rejectReason').style.borderColor = 'var(--red)';
-    document.getElementById('rejectReason').placeholder = 'Reason is required!';
-    return;
-  }
-  document.getElementById('rejectReason').style.borderColor = '';
-
-  const id = pendingRejectId;
-  closeRejectModal();
-  const card = document.getElementById(`biz-${id}`);
-  if (card) card.style.opacity = '0.5';
-
+async function doReject() {
+  const reason=document.getElementById('rejectReason').value.trim();
+  if (!reason) { document.getElementById('rejectReason').style.borderColor='var(--red)'; return; }
+  const id=rejectId; closeReject(); fade(id,.4);
   try {
-    const res = await fetch(`${API}/admin/businesses/${id}`, {
-      method: 'PATCH',
-      headers: { 'Content-Type': 'application/json', Authorization: `Bearer ${token}` },
-      body: JSON.stringify({ status: 'rejected', rejection_reason: reason }),
-    });
-    const data = await res.json();
-    if (!data.success) throw new Error(data.message);
-    showToast('❌ Business rejected.', 'error');
-    await loadData();
-  } catch (e) {
-    if (card) card.style.opacity = '1';
-    showToast(`Error: ${e.message}`, 'error');
-  }
+    const r=await patch(`/admin/businesses/${id}`,{status:'rejected',rejection_reason:reason});
+    if (!r.success) throw new Error(r.message);
+    toast('Business rejected.','err');
+    await loadAll();
+  } catch(e) { fade(id,1); toast(e.message,'err'); }
 }
 
-// ── Photos viewer ─────────────────────────────────────────────────────────────
-async function viewPhotos(bizId, bizName) {
-  document.getElementById('photosModalTitle').textContent = bizName;
-  document.getElementById('photosModalSub').textContent = 'Loading photos…';
-  document.getElementById('photosGrid').innerHTML = '<div class="loading"><div class="spinner"></div></div>';
-  document.getElementById('photosModal').classList.add('open');
-
-  try {
-    const res = await fetch(`${API}/businesses/${bizId}`, {
-      headers: { Authorization: `Bearer ${token}` },
-    });
-    const data = await res.json();
-    const photos = data.data?.photos || [];
-
-    if (photos.length === 0) {
-      document.getElementById('photosModalSub').textContent = 'No photos uploaded yet.';
-      document.getElementById('photosGrid').innerHTML = '<p style="color:#9CA3AF;padding:20px;text-align:center">No photos</p>';
-    } else {
-      document.getElementById('photosModalSub').textContent = `${photos.length} photo${photos.length > 1 ? 's' : ''}`;
-      document.getElementById('photosGrid').innerHTML = photos.map(p => `
-        <img src="${escHtml(p.image_url)}" alt="Photo"
-          onclick="window.open('${escHtml(p.image_url)}','_blank')"
-          title="${p.is_primary ? '⭐ Cover photo' : 'Click to open full size'}"
-          style="${p.is_primary ? 'outline:3px solid #FE4A49' : ''}"
-        >
-      `).join('');
-    }
-  } catch (e) {
-    document.getElementById('photosModalSub').textContent = 'Failed to load photos.';
-    document.getElementById('photosGrid').innerHTML = '';
-  }
-}
-
-function closePhotosModal() {
-  document.getElementById('photosModal').classList.remove('open');
-}
+// ── Lightbox ──────────────────────────────────────────────────────────────────
+function openLb(url) { document.getElementById('lbImg').src=url; document.getElementById('lb').classList.add('open'); }
+function closeLb()   { document.getElementById('lb').classList.remove('open'); }
+document.addEventListener('keydown', e=>{ if(e.key==='Escape'){closeLb();closeReject();} });
+document.getElementById('rejectModal').addEventListener('click',function(e){if(e.target===this)closeReject();});
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
-function showList(html) {
-  document.getElementById('bizList').innerHTML = html;
-}
+function setList(h) { document.getElementById('list').innerHTML=h; }
+function fade(id,o) { const c=document.getElementById(`c-${id}`); if(c) c.style.opacity=o; }
 
-function showToast(msg, type = '') {
-  const el = document.getElementById('toast');
-  el.textContent = msg;
-  el.className   = `toast ${type}`;
+function toast(msg,type='') {
+  const el=document.getElementById('toast');
+  el.textContent=msg; el.className=`toast ${type}`;
   el.classList.add('show');
-  setTimeout(() => el.classList.remove('show'), 3000);
+  setTimeout(()=>el.classList.remove('show'),3000);
 }
 
-function escHtml(str) {
-  if (!str) return '';
-  return String(str)
-    .replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')
-    .replace(/"/g,'&quot;').replace(/'/g,'&#039;');
+function esc(s) {
+  if(!s) return '';
+  return String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#039;');
 }
 
-function formatDate(str) {
-  if (!str) return '—';
-  try {
-    return new Date(str).toLocaleDateString('en-US', { month:'short', day:'numeric', year:'numeric' });
-  } catch { return str; }
+function fmtDate(s) {
+  if(!s) return '—';
+  try { return new Date(s).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}); } catch{ return s; }
 }
 
-// Close modals on backdrop click
-document.getElementById('rejectModal').addEventListener('click', function(e) {
-  if (e.target === this) closeRejectModal();
-});
-document.getElementById('photosModal').addEventListener('click', function(e) {
-  if (e.target === this) closePhotosModal();
-});
+async function get(path) {
+  const r=await fetch(API+path,{headers:{Authorization:`Bearer ${token}`}});
+  if(r.status===401){logout();throw new Error('Session expired');}
+  return r.json();
+}
+async function post(path,body) {
+  const r=await fetch(API+path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  return r.json();
+}
+async function patch(path,body) {
+  const r=await fetch(API+path,{method:'PATCH',headers:{'Content-Type':'application/json',Authorization:`Bearer ${token}`},body:JSON.stringify(body)});
+  return r.json();
+}
 </script>
 </body>
 </html>
