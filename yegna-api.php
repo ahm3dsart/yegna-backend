@@ -134,9 +134,15 @@ function find_user_by_username($pdo, $u) {
     catch (PDOException $e) { return null; }
 }
 function find_user_by_id($pdo, $id) {
-    // Select only safe columns — username may not exist on older schema
-    $s = $pdo->prepare('SELECT id,name,email,phone,bio,avatar_url,role,points,level,is_verified,email_verified,birth_date,google_id,created_at FROM users WHERE id=?');
-    $s->execute([$id]); return $s->fetch() ?: null;
+    // Try full column set first, fall back to basic columns if schema is older
+    try {
+        $s = $pdo->prepare('SELECT id,name,email,phone,bio,avatar_url,role,points,level,is_verified,email_verified,birth_date,google_id,created_at FROM users WHERE id=?');
+        $s->execute([$id]); return $s->fetch() ?: null;
+    } catch (PDOException $e) {
+        // Fall back to guaranteed columns
+        $s = $pdo->prepare('SELECT id,name,email,avatar_url,role,created_at FROM users WHERE id=?');
+        $s->execute([$id]); return $s->fetch() ?: null;
+    }
 }
 function username_exists($pdo, $u) {
     try { $s = $pdo->prepare('SELECT id FROM users WHERE username=?'); $s->execute([$u]); return (bool)$s->fetch(); }
@@ -891,9 +897,21 @@ if ($base === 'reviews' && is_numeric($sub)) {
 // ── ADMIN ──────────────────────────────────────────────────────────────────────
 if ($base === 'admin') {
     $uid = require_auth($JWT_SECRET);
-    // Verify admin role
-    $me = find_user_by_id($pdo, $uid);
-    if (!$me || $me['role'] !== 'admin') { http_response_code(403); echo json_encode(['success' => false, 'message' => 'Admin access required.']); exit; }
+    // Verify admin role — use minimal query to avoid missing column errors
+    try {
+        $roleStmt = $pdo->prepare('SELECT role FROM users WHERE id=?');
+        $roleStmt->execute([$uid]);
+        $roleRow = $roleStmt->fetch();
+    } catch (PDOException $e) {
+        http_response_code(500);
+        echo json_encode(['success' => false, 'message' => 'DB error: ' . $e->getMessage()]);
+        exit;
+    }
+    if (!$roleRow || $roleRow['role'] !== 'admin') {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'message' => 'Admin access required.']);
+        exit;
+    }
 
     // GET /admin/businesses?status=pending|approved|rejected
     if ($sub === 'businesses' && $method === 'GET') {
