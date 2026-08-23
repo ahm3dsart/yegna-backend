@@ -971,6 +971,7 @@ if ($base === 'admin') {
     if ($sub === 'businesses' && is_numeric($subsub) && $method === 'PATCH') {
         $bizId  = (int)$subsub;
         $status = $input['status'] ?? '';
+        $reason = trim($input['rejection_reason'] ?? '');
         if (!in_array($status, ['approved', 'rejected'], true)) {
             http_response_code(400);
             echo json_encode(['success' => false, 'message' => 'status must be approved or rejected.']);
@@ -980,6 +981,14 @@ if ($base === 'admin') {
         try {
             // Try with status column first
             $pdo->prepare('UPDATE businesses SET status=?, is_active=? WHERE id=?')->execute([$status, $isActive, $bizId]);
+            // Save rejection reason if provided
+            if ($status === 'rejected' && $reason) {
+                try {
+                    $pdo->prepare('UPDATE businesses SET rejection_reason=? WHERE id=?')->execute([$reason, $bizId]);
+                } catch (PDOException $e) {
+                    // rejection_reason column may not exist yet — ignore
+                }
+            }
         } catch (PDOException $e) {
             // Fallback if status column missing
             $pdo->prepare('UPDATE businesses SET is_active=? WHERE id=?')->execute([$isActive, $bizId]);
