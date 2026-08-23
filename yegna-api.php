@@ -897,19 +897,18 @@ if ($base === 'reviews' && is_numeric($sub)) {
 // ── ADMIN ──────────────────────────────────────────────────────────────────────
 if ($base === 'admin') {
     $uid = require_auth($JWT_SECRET);
-    // Verify admin role — use minimal query to avoid missing column errors
     try {
         $roleStmt = $pdo->prepare('SELECT role FROM users WHERE id=?');
         $roleStmt->execute([$uid]);
         $roleRow = $roleStmt->fetch();
     } catch (PDOException $e) {
         http_response_code(500);
-        echo json_encode(['success' => false, 'message' => 'DB error: ' . $e->getMessage()]);
+        echo json_encode(['success' => false, 'message' => 'Role check failed: ' . $e->getMessage()]);
         exit;
     }
     if (!$roleRow || $roleRow['role'] !== 'admin') {
         http_response_code(403);
-        echo json_encode(['success' => false, 'message' => 'Admin access required.']);
+        echo json_encode(['success' => false, 'message' => 'Admin access required. Role: ' . ($roleRow['role'] ?? 'none')]);
         exit;
     }
 
@@ -918,9 +917,18 @@ if ($base === 'admin') {
         $status = $_GET['status'] ?? 'pending';
         $lim    = max(1, (int)($_GET['limit'] ?? 50));
         $off    = max(0, (int)($_GET['offset'] ?? 0));
-        $s = $pdo->prepare('SELECT b.*, u.name as owner_name FROM businesses b LEFT JOIN users u ON b.owner_id=u.id WHERE b.status=? ORDER BY b.created_at DESC LIMIT ' . $lim . ' OFFSET ' . $off);
-        $s->execute([$status]);
-        echo json_encode(['success' => true, 'data' => $s->fetchAll()]); exit;
+        try {
+            $s = $pdo->prepare('SELECT b.id, b.name, b.category, b.address, b.city, b.owner_id, b.status, b.created_at FROM businesses b ORDER BY b.created_at DESC LIMIT ' . $lim . ' OFFSET ' . $off);
+            $s->execute();
+            $rows = $s->fetchAll();
+            // Filter by status in PHP (avoids potential SQL issue)
+            $filtered = array_values(array_filter($rows, fn($r) => $r['status'] === $status));
+            echo json_encode(['success' => true, 'data' => $filtered]);
+        } catch (PDOException $e) {
+            http_response_code(500);
+            echo json_encode(['success' => false, 'message' => 'Query failed: ' . $e->getMessage()]);
+        }
+        exit;
     }
 
     // PATCH /admin/businesses/:id — approve or reject
