@@ -121,8 +121,51 @@ function send_otp_email($email, $name, $code, $type = 'verify') {
         ? "Hi $name, use the code below to reset your password. Expires in 15 minutes."
         : "Hi $name, use the code below to verify your email. Expires in 15 minutes.";
     $html = "<div style='font-family:Arial,sans-serif;max-width:500px;margin:0 auto'><div style='background:#FE4A49;padding:32px;text-align:center;border-radius:12px 12px 0 0'><h1 style='color:white;margin:0'>Yegna</h1></div><div style='background:#fff;padding:32px;border-radius:0 0 12px 12px;border:1px solid #e5e7eb'><h2>$title</h2><p style='color:#6b7280'>$msg</p><div style='background:#f9fafb;border:2px dashed #FE4A49;border-radius:12px;padding:24px;text-align:center;margin:24px 0'><span style='font-size:42px;font-weight:800;letter-spacing:12px;color:#FE4A49'>$code</span></div><p style='color:#9ca3af;font-size:12px;text-align:center'>&copy; $year Yegna</p></div></div>";
-    $headers = "MIME-Version: 1.0\r\nContent-Type: text/html; charset=UTF-8\r\nFrom: Yegna App <yegnaapp@gmail.com>\r\n";
-    mail($email, $subject, $html, $headers);
+
+    // Send via Gmail SMTP (SSL port 465) — no external library needed
+    smtp_send_email($email, $subject, $html);
+}
+
+function smtp_send_email(string $to, string $subject, string $html): void {
+    $host = 'ssl://smtp.gmail.com';
+    $port = 465;
+    $user = 'yegnaapp@gmail.com';
+    $pass = 'ubaj ojjz ysyq ephd';
+    $from = 'yegnaapp@gmail.com';
+    $name = 'Yegna App';
+
+    $sock = @fsockopen($host, $port, $errno, $errstr, 15);
+    if (!$sock) {
+        error_log("Yegna SMTP connect failed: $errstr ($errno)");
+        return;
+    }
+
+    $read = function() use ($sock) { return fgets($sock, 512); };
+    $send = function(string $cmd) use ($sock) { fwrite($sock, $cmd . "\r\n"); };
+
+    $read(); // 220 greeting
+    $send("EHLO verifypay.et"); while (strpos($r = $read(), '-') === 3) {} // read all EHLO lines
+    $send("AUTH LOGIN");       $read();
+    $send(base64_encode($user)); $read();
+    $send(base64_encode($pass)); $r = $read();
+    if (strpos($r, '235') === false) { fclose($sock); error_log("Yegna SMTP auth failed: $r"); return; }
+
+    $send("MAIL FROM:<$from>");  $read();
+    $send("RCPT TO:<$to>");      $read();
+    $send("DATA");               $read();
+
+    $body  = "Date: " . date('r') . "\r\n";
+    $body .= "From: =?UTF-8?B?" . base64_encode($name) . "?= <$from>\r\n";
+    $body .= "To: $to\r\n";
+    $body .= "Subject: =?UTF-8?B?" . base64_encode($subject) . "?=\r\n";
+    $body .= "MIME-Version: 1.0\r\n";
+    $body .= "Content-Type: text/html; charset=UTF-8\r\n";
+    $body .= "Content-Transfer-Encoding: base64\r\n\r\n";
+    $body .= chunk_split(base64_encode($html));
+    $body .= "\r\n.";
+    $send($body); $read();
+
+    $send("QUIT"); fclose($sock);
 }
 
 // ── USER HELPERS ──────────────────────────────────────────────────────────────
