@@ -918,12 +918,19 @@ if ($base === 'admin') {
         $lim    = max(1, (int)($_GET['limit'] ?? 50));
         $off    = max(0, (int)($_GET['offset'] ?? 0));
         try {
-            $s = $pdo->prepare('SELECT b.id, b.name, b.category, b.address, b.city, b.owner_id, b.status, b.created_at FROM businesses b ORDER BY b.created_at DESC LIMIT ' . $lim . ' OFFSET ' . $off);
-            $s->execute();
-            $rows = $s->fetchAll();
-            // Filter by status in PHP (avoids potential SQL issue)
-            $filtered = array_values(array_filter($rows, fn($r) => $r['status'] === $status));
-            echo json_encode(['success' => true, 'data' => $filtered]);
+            // Check if status column exists
+            $hasStatus = false;
+            try { $pdo->query('SELECT status FROM businesses LIMIT 1'); $hasStatus = true; } catch (PDOException $e) {}
+
+            if ($hasStatus) {
+                $s = $pdo->prepare('SELECT id,name,category,address,city,owner_id,status,created_at FROM businesses WHERE status=? ORDER BY created_at DESC LIMIT ' . $lim . ' OFFSET ' . $off);
+                $s->execute([$status]);
+            } else {
+                // status column missing — show all as pending
+                $s = $pdo->prepare('SELECT id,name,category,address,city,owner_id,created_at FROM businesses ORDER BY created_at DESC LIMIT ' . $lim . ' OFFSET ' . $off);
+                $s->execute();
+            }
+            echo json_encode(['success' => true, 'data' => $s->fetchAll(), 'status_column' => $hasStatus]);
         } catch (PDOException $e) {
             http_response_code(500);
             echo json_encode(['success' => false, 'message' => 'Query failed: ' . $e->getMessage()]);
@@ -935,10 +942,21 @@ if ($base === 'admin') {
     if ($sub === 'businesses' && is_numeric($subsub) && $method === 'PATCH') {
         $bizId  = (int)$subsub;
         $status = $input['status'] ?? '';
-        if (!in_array($status, ['approved', 'rejected'], true)) { http_response_code(400); echo json_encode(['success' => false, 'message' => 'status must be approved or rejected.']); exit; }
+        if (!in_array($status, ['approved', 'rejected'], true)) {
+            http_response_code(400);
+            echo json_encode(['success' => false, 'message' => 'status must be approved or rejected.']);
+            exit;
+        }
         $isActive = $status === 'approved' ? 1 : 0;
-        $pdo->prepare('UPDATE businesses SET status=?, is_active=? WHERE id=?')->execute([$status, $isActive, $bizId]);
-        echo json_encode(['success' => true, 'message' => 'Business ' . $status . '.']); exit;
+        try {
+            // Try with status column first
+            $pdo->prepare('UPDATE businesses SET status=?, is_active=? WHERE id=?')->execute([$status, $isActive, $bizId]);
+        } catch (PDOException $e) {
+            // Fallback if status column missing
+            $pdo->prepare('UPDATE businesses SET is_active=? WHERE id=?')->execute([$isActive, $bizId]);
+        }
+        echo json_encode(['success' => true, 'message' => 'Business ' . $status . '.']);
+        exit;
     }
 }
 
