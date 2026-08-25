@@ -526,13 +526,33 @@ if ($base === 'businesses') {
         $uid   = require_auth($JWT_SECRET);
         $bizId = (int)($input['businessId'] ?? 0);
         if (!$bizId) { http_response_code(400); echo json_encode(['success' => false, 'message' => 'businessId required.']); exit; }
-        $chk = $pdo->prepare('SELECT id FROM favorites WHERE user_id=? AND business_id=?'); $chk->execute([$uid, $bizId]);
+
+        // Reject saves for missing / inactive businesses
+        $bizChk = $pdo->prepare('SELECT id FROM businesses WHERE id=? AND is_active=1');
+        $bizChk->execute([$bizId]);
+        if (!$bizChk->fetch()) {
+            http_response_code(404);
+            echo json_encode(['success' => false, 'message' => 'Business not available.']);
+            exit;
+        }
+
+        $chk = $pdo->prepare('SELECT id FROM favorites WHERE user_id=? AND business_id=?');
+        $chk->execute([$uid, $bizId]);
         if ($chk->fetch()) {
             $pdo->prepare('DELETE FROM favorites WHERE user_id=? AND business_id=?')->execute([$uid, $bizId]);
-            echo json_encode(['success' => true, 'data' => ['isFavorite' => false]]);
+            // Clear reminder tracking so a future re-save can remind again later
+            try {
+                $pdo->prepare('DELETE FROM saved_reminders WHERE user_id=? AND business_id=?')->execute([$uid, $bizId]);
+            } catch (PDOException $e) {}
+            echo json_encode(['success' => true, 'data' => ['isFavorite' => false, 'action' => 'removed']]);
         } else {
-            $pdo->prepare('INSERT INTO favorites (user_id,business_id) VALUES (?,?)')->execute([$uid, $bizId]);
-            echo json_encode(['success' => true, 'data' => ['isFavorite' => true]]);
+            // UNIQUE(user_id, business_id) prevents duplicates
+            try {
+                $pdo->prepare('INSERT INTO favorites (user_id,business_id) VALUES (?,?)')->execute([$uid, $bizId]);
+            } catch (PDOException $e) {
+                // Concurrent duplicate insert — treat as already saved
+            }
+            echo json_encode(['success' => true, 'data' => ['isFavorite' => true, 'action' => 'added']]);
         }
         exit;
     }
@@ -552,14 +572,68 @@ if ($base === 'businesses') {
         $s = $pdo->prepare($sql); $s->execute($params); $rows = $s->fetchAll();
         echo json_encode(['success' => true, 'data' => $rows, 'count' => count($rows)]); exit;
     }
+    // DELETE /businesses/:id/reviews/:reviewId
+    if (is_numeric($sub) && $subsub === 'reviews' && is_numeric($subsubid) && $method === 'DELETE') {
+        $bizId  = (int)$sub;
+        $rid    = (int)$subsubid;
+        $authUid = get_auth_user_id($JWT_SECRET);
+        if (!$authUid) { http_response_code(401); echo json_encode(['success' => false, 'message' => 'Authentication required.']); exit; }
+        $ex = $pdo->prepare('SELECT * FROM reviews WHERE id=? AND business_id=? AND user_id=?');
+        $ex->execute([$rid, $bizId, $authUid]);
+        $rev = $ex->fetch();
+        if (!$rev) { http_response_code(404); echo json_encode(['success' => false, 'message' => 'Review not found or not yours.']); exit; }
+        $pdo->prepare('DELETE FROM reviews WHERE id=?')->execute([$rid]);
+        $avg = $pdo->prepare('SELECT AVG(rating) as a, COUNT(*) as c FROM reviews WHERE business_id=?');
+        $avg->execute([$bizId]);
+        $r = $avg->fetch();
+        $pdo->prepare('UPDATE businesses SET rating=?, review_count=? WHERE id=?')
+            ->execute([round($r['a'] ?? 0, 2), $r['c'], $bizId]);
+        echo json_encode(['success' => true, 'message' => 'Review deleted.']); exit;
+    }
+
+    // PUT/PATCH /businesses/:id/reviews/:reviewId
+    if (is_numeric($sub) && $subsub === 'reviews' && is_numeric($subsubid) && ($method === 'PUT' || $method === 'PATCH')) {
+        $bizId  = (int)$sub;
+        $rid    = (int)$subsubid;
+        $authUid = get_auth_user_id($JWT_SECRET);
+        if (!$authUid) { http_response_code(401); echo json_encode(['success' => false, 'message' => 'Authentication required.']); exit; }
+        $ex = $pdo->prepare('SELECT * FROM reviews WHERE id=? AND business_id=? AND user_id=?');
+        $ex->execute([$rid, $bizId, $authUid]);
+        $rev = $ex->fetch();
+        if (!$rev) { http_response_code(404); echo json_encode(['success' => false, 'message' => 'Review not found or not yours.']); exit; }
+        $newRating  = isset($input['rating'])  ? (int)$input['rating']         : $rev['rating'];
+        $newTitle   = isset($input['title'])   ? trim($input['title'])          : $rev['title'];
+        $newContent = isset($input['content']) ? trim($input['content'])        : $rev['content'];
+        $pdo->prepare('UPDATE reviews SET rating=?, title=?, content=? WHERE id=?')
+            ->execute([$newRating, $newTitle ?: null, $newContent, $rid]);
+        echo json_encode(['success' => true, 'message' => 'Review updated.']); exit;
+    }
+
+    // POST /businesses/:id/reviews/:reviewId/helpful
+    if (is_numeric($sub) && $subsub === 'reviews' && is_numeric($subsubid) && $method === 'POST') {
+        echo json_encode(['success' => true]); exit;
+    }
+
+    // POST /businesses/:id/reviews/:reviewId/report  
+    // (caught by the helpful handler above for now)
+
     // GET /businesses/:id/reviews
-    if (is_numeric($sub) && $subsub === 'reviews' && $method === 'GET') {
+    if (is_numeric($sub) && $subsub === 'reviews' && $method === 'GET' && $subsubid === '') {
         $bizId = (int)$sub;
-        $lim = (int)($_GET['limit'] ?? 20); $off = (int)($_GET['offset'] ?? 0);
-        $s = $pdo->prepare('SELECT r.*,u.name as user_name,u.avatar_url FROM reviews r JOIN users u ON r.user_id=u.id WHERE r.business_id=? ORDER BY r.created_at DESC LIMIT ? OFFSET ?');
-        $s->execute([$bizId, $lim, $off]);
-        $tot = $pdo->prepare('SELECT COUNT(*) as c FROM reviews WHERE business_id=?'); $tot->execute([$bizId]);
-        echo json_encode(['success' => true, 'data' => $s->fetchAll(), 'total' => $tot->fetch()['c']]); exit;
+        $lim = max(1, (int)($_GET['limit'] ?? 20));
+        $off = max(0, (int)($_GET['offset'] ?? 0));
+        try {
+            $s = $pdo->prepare('SELECT r.id, r.business_id, r.user_id, r.rating, r.title, r.content, r.created_at, u.name as user_name, u.avatar_url FROM reviews r JOIN users u ON r.user_id=u.id WHERE r.business_id=? ORDER BY r.created_at DESC LIMIT ? OFFSET ?');
+            $s->execute([$bizId, $lim, $off]);
+            $rows = $s->fetchAll();
+            $cnt = $pdo->prepare('SELECT COUNT(*) FROM reviews WHERE business_id=?');
+            $cnt->execute([$bizId]);
+            $total = (int)$cnt->fetchColumn();
+            echo json_encode(['success' => true, 'data' => $rows, 'total' => $total, 'distribution' => []]);
+        } catch (PDOException $e) {
+            echo json_encode(['success' => true, 'data' => [], 'total' => 0, 'distribution' => [], '_err' => $e->getMessage()]);
+        }
+        exit;
     }
     // POST /businesses/:id/reviews
     if (is_numeric($sub) && $subsub === 'reviews' && $method === 'POST') {
@@ -660,8 +734,46 @@ if ($base === 'user') {
         echo json_encode(['success' => true, 'message' => 'Profile updated.', 'data' => find_user_by_id($pdo, $uid)]); exit;
     }
     if ($sub === 'favorites' && $method === 'GET') {
-        $s = $pdo->prepare('SELECT b.* FROM businesses b JOIN favorites f ON f.business_id=b.id WHERE f.user_id=? ORDER BY f.created_at DESC'); $s->execute([$uid]);
-        $rows = $s->fetchAll(); echo json_encode(['success' => true, 'data' => $rows, 'count' => count($rows)]); exit;
+        // Active businesses only; include hours + cover photo for Saved list UI.
+        // Inactive/deleted businesses are dropped (CASCADE removes favorites for hard-deletes).
+        $s = $pdo->prepare(
+            'SELECT b.*
+             FROM businesses b
+             JOIN favorites f ON f.business_id = b.id
+             WHERE f.user_id = ? AND b.is_active = 1
+             ORDER BY f.created_at DESC'
+        );
+        $s->execute([$uid]);
+        $rows = $s->fetchAll();
+
+        // Attach today's hours + primary photo for each saved business
+        $hrsStmt = $pdo->prepare(
+            'SELECT * FROM business_hours WHERE business_id = ?
+             ORDER BY FIELD(day_of_week,"Monday","Tuesday","Wednesday","Thursday","Friday","Saturday","Sunday")'
+        );
+        $photoStmt = $pdo->prepare(
+            'SELECT image_url FROM photos WHERE business_id = ? ORDER BY is_primary DESC, id ASC LIMIT 1'
+        );
+
+        foreach ($rows as &$biz) {
+            $hrsStmt->execute([(int)$biz['id']]);
+            $biz['hours'] = $hrsStmt->fetchAll();
+
+            if (empty($biz['cover_image_url']) && empty($biz['image_url'])) {
+                $photoStmt->execute([(int)$biz['id']]);
+                $ph = $photoStmt->fetchColumn();
+                if ($ph) {
+                    $biz['cover_image_url'] = $ph;
+                    $biz['image_url'] = $ph;
+                }
+            }
+
+            $biz['unavailable'] = false;
+        }
+        unset($biz);
+
+        echo json_encode(['success' => true, 'data' => $rows, 'count' => count($rows)]);
+        exit;
     }
     if ($sub === 'visited' && $method === 'GET') {
         $s = $pdo->prepare('SELECT b.* FROM businesses b JOIN visits v ON v.business_id=b.id WHERE v.user_id=? ORDER BY v.visited_at DESC'); $s->execute([$uid]);
@@ -745,6 +857,27 @@ if ($base === 'social') {
         $tid = (int)$subsub;
         if ($tid === $uid) { http_response_code(400); echo json_encode(['success' => false, 'message' => "Can't follow yourself."]); exit; }
         $pdo->prepare('INSERT IGNORE INTO follows (follower_id,following_id) VALUES (?,?)')->execute([$uid, $tid]);
+
+        // Notify the person who was followed
+        $follower = $pdo->prepare('SELECT name FROM users WHERE id=?'); $follower->execute([$uid]);
+        $followerRow = $follower->fetch();
+        $followerName = $followerRow['name'] ?? 'Someone';
+        $notifTitle = "$followerName started following you";
+        $notifData  = json_encode(['type' => 'follow', 'user_id' => $uid, 'userId' => $uid, 'user_name' => $followerName]);
+        try {
+            $pdo->prepare('INSERT IGNORE INTO notifications (user_id, type, title, message, data) VALUES (?,?,?,?,?)')
+                ->execute([$tid, 'follow', $notifTitle, $notifTitle, $notifData]);
+        } catch (PDOException $e) {}
+        $tokens = get_push_tokens($pdo, [$tid]);
+        if (!empty($tokens)) {
+            send_expo_push($tokens, $notifTitle, 'Tap to see their profile.', [
+                'type'     => 'follow',
+                'user_id'  => $uid,
+                'userId'   => $uid,
+                'userName' => $followerName,
+            ]);
+        }
+
         echo json_encode(['success' => true, 'data' => ['is_following' => true]]); exit;
     }
     if ($sub === 'follow' && is_numeric($subsub) && $method === 'DELETE') {
@@ -1046,6 +1179,384 @@ if ($base === 'admin') {
         echo json_encode(['success' => true, 'message' => 'Business ' . $status . '.']);
         exit;
     }
+}
+
+// ── TEMPORARY DEBUG — remove after diagnosis ──────────────────────────────────
+if ($base === 'debug-reviews') {
+    header('Content-Type: application/json');
+    $bizId = (int)($_GET['biz'] ?? 9);
+    $results = [];
+    // Test 1: does the reviews table exist?
+    try {
+        $t = $pdo->query('SHOW TABLES LIKE "reviews"');
+        $results['table_exists'] = (bool)$t->fetch();
+    } catch (Exception $e) { $results['table_exists'] = 'error: ' . $e->getMessage(); }
+    // Test 2: what columns does it have?
+    try {
+        $c = $pdo->query('SHOW COLUMNS FROM reviews');
+        $results['columns'] = array_column($c->fetchAll(), 'Field');
+    } catch (Exception $e) { $results['columns'] = 'error: ' . $e->getMessage(); }
+    // Test 3: simple count
+    try {
+        $cnt = $pdo->prepare('SELECT COUNT(*) FROM reviews WHERE business_id=?');
+        $cnt->execute([$bizId]);
+        $results['count'] = (int)$cnt->fetchColumn();
+    } catch (Exception $e) { $results['count'] = 'error: ' . $e->getMessage(); }
+    // Test 4: the actual query we use
+    try {
+        $s = $pdo->prepare('SELECT r.id, r.business_id, r.user_id, r.rating, r.title, r.content, r.created_at, u.name as user_name, u.avatar_url FROM reviews r JOIN users u ON r.user_id=u.id WHERE r.business_id=? ORDER BY r.created_at DESC LIMIT 5 OFFSET 0');
+        $s->execute([$bizId]);
+        $results['query_ok'] = true;
+        $results['rows'] = $s->fetchAll();
+    } catch (Exception $e) { $results['query_ok'] = false; $results['query_error'] = $e->getMessage(); }
+    echo json_encode($results);
+    exit;
+}
+function send_expo_push(array $tokens, string $title, string $body, array $data = []): void {
+    if (empty($tokens)) return;
+    $messages = array_map(fn($t) => [
+        'to'    => $t,
+        'sound' => 'default',
+        'title' => $title,
+        'body'  => $body,
+        'data'  => $data,
+    ], array_values($tokens));
+    // Expo push endpoint accepts up to 100 per batch
+    foreach (array_chunk($messages, 100) as $batch) {
+        $ch = curl_init('https://exp.host/--/api/v2/push/send');
+        curl_setopt_array($ch, [
+            CURLOPT_POST           => true,
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT        => 10,
+            CURLOPT_HTTPHEADER     => ['Content-Type: application/json','Accept: application/json'],
+            CURLOPT_POSTFIELDS     => json_encode($batch),
+        ]);
+        curl_exec($ch);
+        curl_close($ch);
+    }
+}
+
+// ── HELPER: get push tokens for a list of user IDs ───────────────────────────
+function get_push_tokens(PDO $pdo, array $userIds): array {
+    if (empty($userIds)) return [];
+    $ph = implode(',', array_fill(0, count($userIds), '?'));
+    $s  = $pdo->prepare("SELECT token FROM push_tokens WHERE user_id IN ($ph)");
+    $s->execute($userIds);
+    return array_column($s->fetchAll(), 'token');
+}
+
+// ── POST /user/checkin-notify — notify followers when user checks in ──────────
+if ($base === 'user' && $sub === 'checkin-notify' && $method === 'POST') {
+    $uid   = require_auth($JWT_SECRET);
+    $bizId = (int)($input['businessId'] ?? 0);
+    if (!$bizId) {
+        http_response_code(400);
+        echo json_encode(['success' => false, 'message' => 'businessId required.']);
+        exit;
+    }
+
+    // Fetch full business details for the rich notification payload
+    $biz = $pdo->prepare('SELECT id, name, image_url, category, address, city FROM businesses WHERE id=? AND is_active=1');
+    $biz->execute([$bizId]);
+    $bizRow = $biz->fetch();
+    if (!$bizRow) {
+        echo json_encode(['success' => false, 'message' => 'Business not found.']);
+        exit;
+    }
+
+    // Fetch the checking-in user's name
+    $usr = $pdo->prepare('SELECT name, avatar_url FROM users WHERE id=?');
+    $usr->execute([$uid]);
+    $usrRow   = $usr->fetch();
+    $userName = $usrRow['name'] ?? 'Someone';
+
+    // Find all followers of this user
+    $fol = $pdo->prepare('SELECT follower_id FROM follows WHERE following_id=?');
+    $fol->execute([$uid]);
+    $followerIds = array_column($fol->fetchAll(), 'follower_id');
+
+    $notified = 0;
+    if (!empty($followerIds)) {
+        $notifTitle = "$userName is at {$bizRow['name']}";
+        $notifMsg   = "{$bizRow['category']} · {$bizRow['city']}";
+
+        // Rich data — both snake_case (in-app deep-link) and camelCase (push payload)
+        $notifData = json_encode([
+            'type'           => 'checkin',
+            'business_id'    => $bizId,
+            'businessId'     => $bizId,
+            'user_id'        => $uid,
+            'user_name'      => $userName,
+            'business_name'  => $bizRow['name'],
+            'business_image' => $bizRow['image_url'],
+            'category'       => $bizRow['category'],
+            'address'        => $bizRow['address'],
+            'city'           => $bizRow['city'],
+        ]);
+
+        $ins = $pdo->prepare(
+            'INSERT INTO notifications (user_id, type, title, message, data) VALUES (?, ?, ?, ?, ?)'
+        );
+        foreach ($followerIds as $fid) {
+            try {
+                $ins->execute([$fid, 'checkin', $notifTitle, $notifMsg, $notifData]);
+                $notified++;
+            } catch (PDOException $e) { /* skip duplicate */ }
+        }
+
+        // Push notifications to followers who have tokens
+        $tokens = get_push_tokens($pdo, $followerIds);
+        if (!empty($tokens)) {
+            send_expo_push($tokens, $notifTitle, $notifMsg, [
+                'type'         => 'checkin',
+                'business_id'  => $bizId,
+                'businessId'   => $bizId,
+                'businessName' => $bizRow['name'],
+                'userId'       => $uid,
+                'userName'     => $userName,
+            ]);
+        }
+    }
+
+    echo json_encode(['success' => true, 'notified' => $notified]);
+    exit;
+}
+
+// ── CAMPAIGNS (admin) ─────────────────────────────────────────────────────────
+if ($base === 'admin' && $sub === 'campaigns') {
+    $uid = require_auth($JWT_SECRET);
+    $roleStmt = $pdo->prepare('SELECT role FROM users WHERE id=?'); $roleStmt->execute([$uid]);
+    $rr = $roleStmt->fetch();
+    if (!$rr || $rr['role'] !== 'admin') { http_response_code(403); echo json_encode(['success' => false, 'message' => 'Admin only.']); exit; }
+
+    // Ensure table exists
+    $pdo->exec('CREATE TABLE IF NOT EXISTS campaigns (
+        id INT PRIMARY KEY AUTO_INCREMENT,
+        business_id INT NOT NULL,
+        title VARCHAR(255) NOT NULL,
+        message TEXT NOT NULL,
+        image_url VARCHAR(500) DEFAULT NULL,
+        target_percent TINYINT NOT NULL DEFAULT 100,
+        recipients_count INT DEFAULT 0,
+        status ENUM("draft","sent","failed") DEFAULT "draft",
+        created_by INT NOT NULL,
+        created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+        sent_at TIMESTAMP NULL DEFAULT NULL,
+        FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE,
+        FOREIGN KEY (created_by) REFERENCES users(id) ON DELETE CASCADE
+    )');
+
+    // GET /admin/campaigns — list all campaigns
+    if ($method === 'GET') {
+        $s = $pdo->prepare('SELECT c.*, b.name as business_name, b.image_url as business_image FROM campaigns c JOIN businesses b ON c.business_id=b.id ORDER BY c.created_at DESC LIMIT 50');
+        $s->execute();
+        echo json_encode(['success' => true, 'data' => $s->fetchAll()]);
+        exit;
+    }
+
+    // POST /admin/campaigns — create + send campaign
+    if ($method === 'POST') {
+        $bizId   = (int)($input['business_id'] ?? 0);
+        $title   = trim($input['title'] ?? '');
+        $message = trim($input['message'] ?? '');
+        $percent = max(1, min(100, (int)($input['target_percent'] ?? 100)));
+        $imgUrl  = trim($input['image_url'] ?? '');
+
+        if (!$bizId || !$title || !$message) {
+            http_response_code(400);
+            echo json_encode(['success' => false, 'message' => 'business_id, title, and message are required.']);
+            exit;
+        }
+
+        // Verify business exists
+        $biz = $pdo->prepare('SELECT name FROM businesses WHERE id=? AND is_active=1'); $biz->execute([$bizId]);
+        $bizRow = $biz->fetch();
+        if (!$bizRow) { http_response_code(404); echo json_encode(['success' => false, 'message' => 'Business not found.']); exit; }
+
+        // Select random eligible users (all users with push tokens)
+        $allUsers = $pdo->query('SELECT pt.user_id, pt.token FROM push_tokens pt JOIN users u ON pt.user_id=u.id WHERE u.role="user"');
+        $eligible = $allUsers->fetchAll();
+
+        // Randomise and pick target percent
+        shuffle($eligible);
+        $count     = max(1, (int)ceil(count($eligible) * $percent / 100));
+        $selected  = array_slice($eligible, 0, $count);
+        $tokens    = array_column($selected, 'token');
+        $userIds   = array_column($selected, 'user_id');
+
+        // Record campaign
+        $pdo->prepare('INSERT INTO campaigns (business_id, title, message, image_url, target_percent, recipients_count, status, created_by) VALUES (?,?,?,?,?,?,?,?)')
+            ->execute([$bizId, $title, $message, $imgUrl ?: null, $percent, count($tokens), 'sent', $uid]);
+        $campaignId = $pdo->lastInsertId();
+
+        // Insert in-app notifications for selected users
+        $ins = $pdo->prepare('INSERT IGNORE INTO notifications (user_id, type, title, message, data) VALUES (?,?,?,?,?)');
+        $notifData = json_encode(['type' => 'promo', 'campaign_id' => (int)$campaignId, 'business_id' => $bizId]);
+        foreach ($userIds as $fid) {
+            try { $ins->execute([$fid, 'promo', $title, $message, $notifData]); } catch (PDOException $e) {}
+        }
+
+        // Send push notifications
+        send_expo_push($tokens, $title, $message, [
+            'type' => 'promo',
+            'campaignId' => (int)$campaignId,
+            'businessId' => $bizId,
+            'businessName' => $bizRow['name'],
+        ]);
+
+        $pdo->prepare('UPDATE campaigns SET sent_at=NOW() WHERE id=?')->execute([$campaignId]);
+        echo json_encode(['success' => true, 'message' => 'Campaign sent.', 'recipients' => count($tokens), 'campaignId' => (int)$campaignId]);
+        exit;
+    }
+}
+
+// ── POST /user/saved-reminder-check ───────────────────────────────────────────
+// Lightweight "you saved this" nudge — NOT a visit appointment.
+// Rules:
+//  • Only after ~5 days since save (within the 3–7 day window)
+//  • At most ONE reminder per user+business (ever), recorded in saved_reminders
+//  • Skip if the user already checked in / visited after saving
+//  • Max 1 reminder per API call (no spam bursts)
+//  • Push is best-effort; in-app notification always recorded when reminding
+if ($base === 'user' && $sub === 'saved-reminder-check' && $method === 'POST') {
+    $uid = require_auth($JWT_SECRET);
+
+    try {
+        $pdo->exec('CREATE TABLE IF NOT EXISTS saved_reminders (
+            id INT PRIMARY KEY AUTO_INCREMENT,
+            user_id INT NOT NULL,
+            business_id INT NOT NULL,
+            reminded_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            UNIQUE KEY uq_user_biz (user_id, business_id),
+            FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE,
+            FOREIGN KEY (business_id) REFERENCES businesses(id) ON DELETE CASCADE
+        )');
+    } catch (PDOException $e) {
+        // Table may already exist without FK on some hosts — continue
+    }
+
+    // One eligible save: old enough, never reminded, still favorited, still active,
+    // and user has not already visited that place after saving it.
+    $s = $pdo->prepare('
+        SELECT f.business_id, b.name AS biz_name
+        FROM favorites f
+        JOIN businesses b ON b.id = f.business_id AND b.is_active = 1
+        LEFT JOIN saved_reminders sr
+          ON sr.user_id = f.user_id AND sr.business_id = f.business_id
+        LEFT JOIN visits v
+          ON v.user_id = f.user_id AND v.business_id = f.business_id
+         AND v.visited_at >= f.created_at
+        WHERE f.user_id = ?
+          AND f.created_at <= DATE_SUB(NOW(), INTERVAL 5 DAY)
+          AND sr.id IS NULL
+          AND v.id IS NULL
+        ORDER BY f.created_at ASC
+        LIMIT 1
+    ');
+    $s->execute([$uid]);
+    $row = $s->fetch();
+
+    if (!$row) {
+        echo json_encode(['success' => true, 'reminders_sent' => 0]);
+        exit;
+    }
+
+    $bizId   = (int)$row['business_id'];
+    $bizName = $row['biz_name'];
+    $title   = "You saved {$bizName} a few days ago";
+    $body    = 'Want to check it out?';
+    $payload = [
+        'type'         => 'saved_reminder',
+        'business_id'  => $bizId,
+        'businessId'   => $bizId,
+        'businessName' => $bizName,
+    ];
+
+    // Record FIRST so concurrent checks cannot double-send
+    try {
+        $pdo->prepare('INSERT INTO saved_reminders (user_id, business_id) VALUES (?,?)')
+            ->execute([$uid, $bizId]);
+    } catch (PDOException $e) {
+        // Already reminded (race) — stop
+        echo json_encode(['success' => true, 'reminders_sent' => 0]);
+        exit;
+    }
+
+    // In-app notification (always — works without push permission)
+    try {
+        $pdo->prepare(
+            'INSERT INTO notifications (user_id, type, title, message, data) VALUES (?,?,?,?,?)'
+        )->execute([
+            $uid,
+            'reminder',
+            $title,
+            $body,
+            json_encode($payload),
+        ]);
+    } catch (PDOException $e) {}
+
+    // Push — best effort; never fail the request if Expo/push is unavailable
+    try {
+        $tk = $pdo->prepare('SELECT token FROM push_tokens WHERE user_id=?');
+        $tk->execute([$uid]);
+        $tok = $tk->fetchColumn();
+        if ($tok) {
+            send_expo_push([$tok], $title, $body, $payload);
+        }
+    } catch (Throwable $e) {}
+
+    echo json_encode(['success' => true, 'reminders_sent' => 1]);
+    exit;
+}
+
+// ── GET /admin/users — list all users (admin only, for campaign targeting info) ──
+if ($base === 'admin' && $sub === 'users' && $method === 'GET') {
+    $uid = require_auth($JWT_SECRET);
+    $roleStmt = $pdo->prepare('SELECT role FROM users WHERE id=?'); $roleStmt->execute([$uid]);
+    $rr = $roleStmt->fetch();
+    if (!$rr || $rr['role'] !== 'admin') { http_response_code(403); echo json_encode(['success' => false, 'message' => 'Admin only.']); exit; }
+    $s = $pdo->query('SELECT id, name, email, role, created_at FROM users ORDER BY created_at DESC LIMIT 200');
+    echo json_encode(['success' => true, 'data' => $s->fetchAll()]);
+    exit;
+}
+
+// ── GET /admin/stats — dashboard stats ──
+if ($base === 'admin' && $sub === 'stats' && $method === 'GET') {
+    $uid = require_auth($JWT_SECRET);
+    $roleStmt = $pdo->prepare('SELECT role FROM users WHERE id=?'); $roleStmt->execute([$uid]);
+    $rr = $roleStmt->fetch();
+    if (!$rr || $rr['role'] !== 'admin') { http_response_code(403); echo json_encode(['success' => false, 'message' => 'Admin only.']); exit; }
+    $totalUsers = $pdo->query('SELECT COUNT(*) FROM users')->fetchColumn();
+    $totalBiz   = $pdo->query('SELECT COUNT(*) FROM businesses WHERE is_active=1')->fetchColumn();
+    $pendingBiz = 0;
+    try { $pendingBiz = $pdo->query("SELECT COUNT(*) FROM businesses WHERE status='pending'")->fetchColumn(); } catch (PDOException $e) {}
+    $totalReviews = $pdo->query('SELECT COUNT(*) FROM reviews')->fetchColumn();
+    $tokenCount = 0;
+    try { $tokenCount = $pdo->query('SELECT COUNT(*) FROM push_tokens')->fetchColumn(); } catch (PDOException $e) {}
+    echo json_encode(['success' => true, 'data' => [
+        'total_users' => (int)$totalUsers,
+        'active_businesses' => (int)$totalBiz,
+        'pending_businesses' => (int)$pendingBiz,
+        'total_reviews' => (int)$totalReviews,
+        'push_token_users' => (int)$tokenCount,
+    ]]);
+    exit;
+}
+
+// ── TEMPORARY DEBUG — diagnose reviews 500 ───────────────────────────────────
+if ($base === 'debug-reviews') {
+    $bizId = (int)($_GET['biz'] ?? 9);
+    $out = [];
+    try { $t = $pdo->query('SHOW TABLES LIKE "reviews"'); $out['table'] = (bool)$t->fetch(); } catch(Exception $e) { $out['table'] = $e->getMessage(); }
+    try { $c = $pdo->query('SHOW COLUMNS FROM reviews'); $out['cols'] = array_column($c->fetchAll(), 'Field'); } catch(Exception $e) { $out['cols'] = $e->getMessage(); }
+    try { $cnt = $pdo->prepare('SELECT COUNT(*) FROM reviews WHERE business_id=?'); $cnt->execute([$bizId]); $out['count'] = (int)$cnt->fetchColumn(); } catch(Exception $e) { $out['count'] = $e->getMessage(); }
+    try {
+        $s = $pdo->prepare('SELECT r.id, r.rating, r.content, u.name as user_name FROM reviews r JOIN users u ON r.user_id=u.id WHERE r.business_id=? LIMIT 3');
+        $s->execute([$bizId]);
+        $out['rows'] = $s->fetchAll();
+    } catch(Exception $e) { $out['rows'] = $e->getMessage(); }
+    echo json_encode($out);
+    exit;
 }
 
 // ── 404 ───────────────────────────────────────────────────────────────────────
