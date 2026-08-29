@@ -1,4 +1,5 @@
 const db = require('../config/database');
+const { sendPushToUser } = require('../services/expoPushService');
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
@@ -17,6 +18,10 @@ async function createNotification(userId, type, title, message, data = {}) {
     await db.execute(
       `INSERT INTO notifications (user_id, type, title, message, data) VALUES (?, ?, ?, ?, ?)`,
       [userId, type, title, message, JSON.stringify(data)]
+    );
+    // ── Deliver via Expo Push so user sees it even when the app is closed ──
+    sendPushToUser(userId, title, message, { ...data, type }).catch((e) =>
+      console.error('Push send (social) failed:', e.message)
     );
   } catch (e) { console.error('Notification error:', e.message); }
 }
@@ -275,12 +280,15 @@ exports.getPublicProfile = async (req, res) => {
 // ── Activity feed (friends discover) ─────────────────────────────────────────
 
 exports.getFriendsFeed = async (req, res) => {
-  const myId  = req.userId;
+  const myId   = req.userId;
   const limit  = parseInt(req.query.limit)  || 20;
   const offset = parseInt(req.query.offset) || 0;
   try {
-    // Pull activity from everyone I follow, respecting visibility
-    const [rows] = await db.execute(
+    // Pull activity from everyone I follow, respecting visibility.
+    // NOTE: db.execute does NOT cast integers correctly when mixed with LIMIT ?, OFFSET ? on MySQL2.
+    // Use db.query (which supports positional ? fine without strict type binding) to avoid the
+    // "you have an error in your SQL syntax near '?, offset ?'" error that returns HTTP 500.
+    const [rows] = await db.query(
       `SELECT
          af.id, af.type, af.caption, af.rating, af.photo_count, af.created_at,
          af.visibility,
@@ -308,7 +316,7 @@ exports.getFriendsFeed = async (req, res) => {
     return res.json({ success: true, data: rows, count: rows.length });
   } catch (e) {
     console.error(e);
-    return res.status(500).json({ success: false, message: 'Server error' });
+    return res.status(500).json({ success: false, message: 'Server error', error: e.message });
   }
 };
 
