@@ -19,7 +19,14 @@ $db_pass   = 'Uwk_9832i';
 $JWT_SECRET = 'yegna_jwt_super_secret_2026';
 
 try {
-    $pdo = new PDO("mysql:host=$db_host;port=$db_port;dbname=$db_name;charset=utf8mb4", $db_user, $db_pass);
+    $pdo = new PDO(
+        "mysql:host=$db_host;port=$db_port;dbname=$db_name;charset=utf8mb4",
+        $db_user,
+        $db_pass,
+        [
+            PDO::ATTR_TIMEOUT => 5, // fail fast — 5 second connection timeout
+        ]
+    );
     $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
     $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
 } catch (PDOException $e) {
