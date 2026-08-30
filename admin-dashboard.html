@@ -146,6 +146,45 @@
     .content{padding:16px}
     .detail-grid{grid-template-columns:1fr}
   }
+
+  /* ── Featured Ads tab styles ── */
+  .section-title{font-size:20px;font-weight:800;margin-bottom:18px;color:var(--gray-900)}
+  .ad-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(320px,1fr));gap:16px;margin-bottom:28px}
+  .ad-card{background:#fff;border-radius:var(--radius);border:1px solid var(--gray-200);box-shadow:var(--shadow);overflow:hidden}
+  .ad-thumb{width:100%;height:160px;object-fit:cover;background:var(--gray-100);display:block}
+  .ad-thumb-video{width:100%;height:160px;background:#111;display:flex;align-items:center;justify-content:center;font-size:40px;color:#fff}
+  .ad-body{padding:14px 16px}
+  .ad-name{font-size:15px;font-weight:800;margin-bottom:4px;color:var(--gray-900)}
+  .ad-meta{font-size:12px;color:var(--gray-400);margin-bottom:8px}
+  .ad-pills{display:flex;flex-wrap:wrap;gap:5px;margin-bottom:10px}
+  .ad-pill{font-size:11px;font-weight:600;padding:3px 9px;border-radius:8px;background:var(--gray-100);color:var(--gray-600)}
+  .ad-pill.active{background:#dcfce7;color:#15803d}
+  .ad-pill.inactive{background:#fef2f2;color:var(--red)}
+  .ad-pill.video{background:#ede9fe;color:#7c3aed}
+  .ad-actions{display:flex;gap:8px;flex-wrap:wrap;padding-top:10px;border-top:1px solid var(--gray-100)}
+  .btn-edit{padding:8px 14px;background:none;border:1.5px solid var(--gray-300);border-radius:9px;font-size:12px;font-weight:600;cursor:pointer;font-family:inherit;color:var(--gray-600)}
+  .btn-edit:hover{background:var(--gray-100)}
+  .btn-toggle-on{padding:8px 14px;background:#dcfce7;border:1.5px solid #86efac;border-radius:9px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;color:#15803d}
+  .btn-toggle-off{padding:8px 14px;background:#fef2f2;border:1.5px solid #fca5a5;border-radius:9px;font-size:12px;font-weight:700;cursor:pointer;font-family:inherit;color:var(--red)}
+  .btn-del{padding:8px 12px;background:none;border:1.5px solid var(--gray-200);border-radius:9px;font-size:12px;cursor:pointer;font-family:inherit;color:var(--gray-400)}
+  .btn-del:hover{border-color:var(--red);color:var(--red)}
+  .btn-new-ad{display:flex;align-items:center;gap:7px;padding:10px 20px;background:var(--primary);color:#fff;border:none;border-radius:12px;font-size:14px;font-weight:700;cursor:pointer;font-family:inherit;transition:opacity .15s}
+  .btn-new-ad:hover{opacity:.88}
+
+  /* ── Ad Form modal ── */
+  .ad-form-row{margin-bottom:16px}
+  .ad-form-row .label{font-size:13px;font-weight:600;color:var(--gray-700);margin-bottom:5px;display:block}
+  .ad-form-row .input{width:100%;padding:10px 13px;border:1.5px solid var(--gray-200);border-radius:10px;font-size:13px;font-family:inherit;outline:none;transition:border-color .15s}
+  .ad-form-row .input:focus{border-color:var(--primary)}
+  select.input{background:#fff;cursor:pointer}
+  .form-grid-2{display:grid;grid-template-columns:1fr 1fr;gap:12px}
+  .upload-zone{border:2px dashed var(--gray-300);border-radius:12px;padding:20px;text-align:center;cursor:pointer;transition:border-color .15s;background:var(--gray-50)}
+  .upload-zone:hover{border-color:var(--primary)}
+  .upload-preview{width:100%;max-height:180px;object-fit:cover;border-radius:10px;margin-top:10px;display:none}
+  .upload-progress{font-size:12px;color:var(--gray-400);margin-top:8px}
+  .ad-modal-title{font-size:20px;font-weight:800;margin-bottom:4px}
+  .ad-modal-sub{font-size:13px;color:var(--gray-400);margin-bottom:24px}
+  @media(max-width:600px){.form-grid-2{grid-template-columns:1fr}}
 </style>
 </head>
 <body>
@@ -211,12 +250,22 @@
         <button class="tab on" id="t-pending"  onclick="setTab('pending')">⏳ Pending  <span class="badge" id="b-pending">0</span></button>
         <button class="tab"    id="t-approved" onclick="setTab('approved')">✅ Approved <span class="badge" id="b-approved">0</span></button>
         <button class="tab"    id="t-rejected" onclick="setTab('rejected')">❌ Rejected <span class="badge" id="b-rejected">0</span></button>
+        <button class="tab"    id="t-featured" onclick="setTab('featured')">📢 Featured Ads <span class="badge" id="b-featured">0</span></button>
       </div>
       <button class="btn-refresh" onclick="loadAll()">🔄 Refresh</button>
     </div>
 
-    <!-- List -->
+    <!-- Business list -->
     <div id="list"></div>
+
+    <!-- Featured Ads section -->
+    <div id="featuredSection" style="display:none">
+      <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px">
+        <div class="section-title" style="margin-bottom:0">📢 Featured Ads</div>
+        <button class="btn-new-ad" onclick="openAdForm(null)">+ New Ad</button>
+      </div>
+      <div id="adGrid" class="ad-grid"></div>
+    </div>
   </div>
 </div>
 
@@ -237,6 +286,100 @@
 <!-- Lightbox -->
 <div class="lightbox" id="lb" onclick="closeLb()">
   <img id="lbImg" src="" alt="">
+</div>
+
+<!-- Featured Ad Form Modal -->
+<div class="overlay" id="adModal">
+  <div class="modal" style="max-width:560px;max-height:90vh;overflow-y:auto">
+    <div class="ad-modal-title" id="adModalTitle">New Featured Ad</div>
+    <div class="ad-modal-sub">Configure an advertisement to appear in the app's Featured section.</div>
+
+    <input type="hidden" id="adId" value="">
+
+    <div class="ad-form-row">
+      <label class="label">Campaign / Ad Title <span style="color:var(--gray-400);font-weight:400">(internal name)</span></label>
+      <input class="input" id="adTitle" type="text" placeholder="e.g. Summer Promo – Coffee Co.">
+    </div>
+
+    <div class="ad-form-row">
+      <label class="label">Linked Business <span style="color:var(--gray-400);font-weight:400">(optional)</span></label>
+      <select class="input" id="adBusinessId">
+        <option value="">— No linked business —</option>
+      </select>
+    </div>
+
+    <div class="ad-form-row">
+      <label class="label">Media Type</label>
+      <select class="input" id="adMediaType" onchange="onMediaTypeChange()">
+        <option value="image">🖼 Image</option>
+        <option value="video">▶ Video</option>
+      </select>
+    </div>
+
+    <div class="ad-form-row">
+      <label class="label">Upload Media</label>
+      <div class="upload-zone" id="uploadZone" onclick="document.getElementById('adMediaFile').click()">
+        <div style="font-size:28px;margin-bottom:6px" id="uploadIcon">🖼</div>
+        <div style="font-size:13px;color:var(--gray-600);font-weight:600">Click to upload image</div>
+        <div style="font-size:11px;color:var(--gray-400);margin-top:3px" id="uploadHint">JPG, PNG or WebP · max 5 MB</div>
+        <div class="upload-progress" id="uploadProgress"></div>
+      </div>
+      <input type="file" id="adMediaFile" style="display:none" onchange="handleMediaUpload(event)">
+      <img id="uploadPreviewImg" class="upload-preview" alt="preview">
+      <video id="uploadPreviewVid" class="upload-preview" controls style="display:none;max-height:180px;width:100%;border-radius:10px;margin-top:10px"></video>
+      <input type="hidden" id="adMediaUrl" value="">
+    </div>
+
+    <div class="ad-form-row">
+      <label class="label">Destination URL <span style="color:var(--gray-400);font-weight:400">(optional)</span></label>
+      <input class="input" id="adDestUrl" type="url" placeholder="https://example.com or app deep link">
+    </div>
+
+    <div class="ad-form-row">
+      <label class="label">CTA Button Text <span style="color:var(--gray-400);font-weight:400">(optional — shown only if URL is set)</span></label>
+      <input class="input" id="adCtaText" type="text" placeholder="e.g. Open Website, Download App, Learn More">
+    </div>
+
+    <div class="ad-form-row form-grid-2">
+      <div>
+        <label class="label">Start Date &amp; Time (EAT)</label>
+        <input class="input" id="adStartAt" type="datetime-local">
+      </div>
+      <div>
+        <label class="label">End Date &amp; Time (EAT)</label>
+        <input class="input" id="adEndAt" type="datetime-local">
+      </div>
+    </div>
+
+    <div class="ad-form-row form-grid-2">
+      <div>
+        <label class="label">Image Display Duration <span style="color:var(--gray-400);font-weight:400">(seconds)</span></label>
+        <input class="input" id="adDuration" type="number" min="3" max="120" value="8">
+      </div>
+      <div>
+        <label class="label">Priority <span style="color:var(--gray-400);font-weight:400">(lower = higher priority)</span></label>
+        <input class="input" id="adPriority" type="number" min="1" value="10">
+      </div>
+    </div>
+
+    <div class="ad-form-row">
+      <label class="label">Rotation Weight <span style="color:var(--gray-400);font-weight:400">(e.g. 3 = shown 3× as often as weight 1)</span></label>
+      <input class="input" id="adWeight" type="number" min="1" value="1">
+    </div>
+
+    <div class="ad-form-row" style="display:flex;align-items:center;gap:12px">
+      <label class="label" style="margin:0;flex-shrink:0">Active</label>
+      <label style="display:flex;align-items:center;gap:8px;cursor:pointer;font-size:13px;color:var(--gray-600)">
+        <input type="checkbox" id="adIsActive" checked style="width:16px;height:16px;accent-color:var(--primary)">
+        Enable this ad immediately
+      </label>
+    </div>
+
+    <div class="modal-btns" style="margin-top:22px">
+      <button class="btn-cancel-md" onclick="closeAdForm()">Cancel</button>
+      <button class="btn-do-reject" id="adSaveBtn" style="background:var(--primary)" onclick="saveAd()">Save Ad</button>
+    </div>
+  </div>
 </div>
 
 <!-- Toast -->
@@ -317,8 +460,18 @@ function updateStats() {
 
 function setTab(t) {
   tab = t;
-  ['pending','approved','rejected'].forEach(s => document.getElementById(`t-${s}`).classList.toggle('on', s===t));
-  render(t);
+  ['pending','approved','rejected','featured'].forEach(s => {
+    const el = document.getElementById(`t-${s}`);
+    if (el) el.classList.toggle('on', s===t);
+  });
+  const isFeatured = t === 'featured';
+  document.getElementById('list').style.display          = isFeatured ? 'none' : '';
+  document.getElementById('featuredSection').style.display = isFeatured ? '' : 'none';
+  if (isFeatured) {
+    loadFeaturedAds();
+  } else {
+    render(t);
+  }
 }
 
 function render(t) {
@@ -443,7 +596,7 @@ async function doReject() {
 // ── Lightbox ──────────────────────────────────────────────────────────────────
 function openLb(url) { document.getElementById('lbImg').src=url; document.getElementById('lb').classList.add('open'); }
 function closeLb()   { document.getElementById('lb').classList.remove('open'); }
-document.addEventListener('keydown', e=>{ if(e.key==='Escape'){closeLb();closeReject();} });
+document.addEventListener('keydown', e=>{ if(e.key==='Escape'){closeLb();closeReject();closeAdForm();} });
 document.getElementById('rejectModal').addEventListener('click',function(e){if(e.target===this)closeReject();});
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
@@ -478,6 +631,281 @@ async function post(path,body) {
 }
 async function patch(path,body) {
   const r=await fetch(API+path,{method:'PATCH',headers:{'Content-Type':'application/json',Authorization:`Bearer ${token}`},body:JSON.stringify(body)});
+  return r.json();
+}
+
+// ── Featured Ads ──────────────────────────────────────────────────────────────
+let adsList = [];
+let businesses = [];
+
+async function loadFeaturedAds() {
+  document.getElementById('adGrid').innerHTML = '<div class="loading"><div class="spin"></div> Loading ads…</div>';
+  try {
+    const r = await get('/admin/featured-ads');
+    if (!r.success) throw new Error(r.message || 'Failed to load ads');
+    adsList = r.data || [];
+    document.getElementById('b-featured').textContent = adsList.length;
+    renderAdGrid();
+  } catch(e) {
+    document.getElementById('adGrid').innerHTML = `<div class="empty"><div class="empty-icon">⚠️</div><p>${esc(e.message)}</p></div>`;
+  }
+}
+
+async function loadBusinesses() {
+  if (businesses.length) return;
+  try {
+    const r = await get('/admin/businesses?status=approved&limit=200');
+    businesses = r.data || [];
+  } catch { businesses = []; }
+}
+
+function renderAdGrid() {
+  if (!adsList.length) {
+    document.getElementById('adGrid').innerHTML = `<div class="empty" style="grid-column:1/-1"><div class="empty-icon">📢</div><div class="empty-title">No ads yet</div><p>Click "+ New Ad" to create your first Featured advertisement.</p></div>`;
+    return;
+  }
+  const now = new Date();
+  document.getElementById('adGrid').innerHTML = adsList.map(ad => {
+    const active = ad.is_active && new Date(ad.start_at) <= now && new Date(ad.end_at) >= now;
+    const scheduled = ad.is_active && new Date(ad.start_at) > now;
+    const expired  = new Date(ad.end_at) < now;
+    const statusLabel = !ad.is_active ? '<span class="ad-pill inactive">Disabled</span>'
+      : expired ? '<span class="ad-pill inactive">Expired</span>'
+      : scheduled ? '<span class="ad-pill" style="background:#fffbeb;color:#92400e">Scheduled</span>'
+      : '<span class="ad-pill active">● Live</span>';
+    const mediaThumb = ad.media_type === 'video'
+      ? `<div class="ad-thumb-video">▶</div>`
+      : `<img class="ad-thumb" src="${esc(ad.media_url)}" onerror="this.style.background='#f3f4f6'" alt="ad">`;
+    return `<div class="ad-card">
+      ${mediaThumb}
+      <div class="ad-body">
+        <div class="ad-name">${esc(ad.title)}</div>
+        <div class="ad-meta">${ad.business_name ? '🏪 ' + esc(ad.business_name) + ' · ' : ''}${fmtDateShort(ad.start_at)} → ${fmtDateShort(ad.end_at)}</div>
+        <div class="ad-pills">
+          ${statusLabel}
+          <span class="ad-pill ${ad.media_type === 'video' ? 'video' : ''}">${ad.media_type === 'video' ? '▶ Video' : '🖼 Image'}</span>
+          ${ad.cta_text ? `<span class="ad-pill" style="background:#e0f2fe;color:#0369a1">${esc(ad.cta_text)}</span>` : ''}
+          <span class="ad-pill">P${ad.priority} W${ad.weight}</span>
+          <span class="ad-pill">👁 ${ad.impressions} · 👆 ${ad.clicks}</span>
+        </div>
+        <div class="ad-actions">
+          <button class="btn-edit" onclick="openAdForm(${ad.id})">✏️ Edit</button>
+          <button class="${ad.is_active ? 'btn-toggle-off' : 'btn-toggle-on'}" onclick="toggleAd(${ad.id},${ad.is_active ? 0 : 1})">${ad.is_active ? '⏸ Disable' : '▶ Enable'}</button>
+          <button class="btn-del" onclick="deleteAd(${ad.id},'${esc(ad.title)}')">🗑</button>
+        </div>
+      </div>
+    </div>`;
+  }).join('');
+}
+
+function fmtDateShort(s) {
+  if(!s) return '—';
+  try { return new Date(s).toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric',hour:'2-digit',minute:'2-digit'}); } catch{ return s; }
+}
+
+async function toggleAd(id, newState) {
+  try {
+    const r = await authPatch(`/admin/featured-ads/${id}`, {is_active: newState});
+    if (!r.success) throw new Error(r.message);
+    toast(newState ? '✅ Ad enabled' : '⏸ Ad disabled', 'ok');
+    await loadFeaturedAds();
+  } catch(e) { toast(e.message, 'err'); }
+}
+
+async function deleteAd(id, title) {
+  if (!confirm(`Delete "${title}"? This cannot be undone.`)) return;
+  try {
+    const r = await authDelete(`/admin/featured-ads/${id}`);
+    if (!r.success) throw new Error(r.message);
+    toast('🗑 Ad deleted', 'ok');
+    await loadFeaturedAds();
+  } catch(e) { toast(e.message, 'err'); }
+}
+
+// ── Ad Form ───────────────────────────────────────────────────────────────────
+async function openAdForm(editId) {
+  await loadBusinesses();
+  // Populate business select
+  const sel = document.getElementById('adBusinessId');
+  sel.innerHTML = '<option value="">— No linked business —</option>';
+  businesses.forEach(b => {
+    const o = document.createElement('option');
+    o.value = b.id; o.textContent = b.name;
+    sel.appendChild(o);
+  });
+
+  document.getElementById('adId').value = '';
+  document.getElementById('adTitle').value = '';
+  document.getElementById('adBusinessId').value = '';
+  document.getElementById('adMediaType').value = 'image';
+  document.getElementById('adMediaUrl').value = '';
+  document.getElementById('adDestUrl').value = '';
+  document.getElementById('adCtaText').value = '';
+  document.getElementById('adDuration').value = '8';
+  document.getElementById('adPriority').value = '10';
+  document.getElementById('adWeight').value = '1';
+  document.getElementById('adIsActive').checked = true;
+  document.getElementById('uploadPreviewImg').style.display = 'none';
+  document.getElementById('uploadPreviewVid').style.display = 'none';
+  document.getElementById('uploadProgress').textContent = '';
+  onMediaTypeChange();
+
+  // Default start/end: current EAT time → +7 days
+  // We compute EAT (UTC+3) explicitly so the default is correct regardless of
+  // where the admin's browser is running.
+  const nowUtcMs = Date.now();
+  const eatOffsetMs = 3 * 60 * 60 * 1000; // EAT = UTC+3
+  const nowEatMs = nowUtcMs + eatOffsetMs;
+  const nowEat = new Date(nowEatMs);
+  const endEat = new Date(nowEatMs + 7 * 24 * 60 * 60 * 1000);
+  // Format as YYYY-MM-DDTHH:MM for datetime-local input
+  const toLocalInput = (d) => d.toISOString().slice(0,16);
+  document.getElementById('adStartAt').value = toLocalInput(nowEat);
+  document.getElementById('adEndAt').value   = toLocalInput(endEat);
+
+  if (editId) {
+    document.getElementById('adModalTitle').textContent = 'Edit Featured Ad';
+    document.getElementById('adSaveBtn').textContent = 'Update Ad';
+    const ad = adsList.find(a => a.id === editId);
+    if (ad) {
+      document.getElementById('adId').value        = ad.id;
+      document.getElementById('adTitle').value     = ad.title;
+      document.getElementById('adBusinessId').value= ad.business_id || '';
+      document.getElementById('adMediaType').value = ad.media_type;
+      document.getElementById('adMediaUrl').value  = ad.media_url;
+      document.getElementById('adDestUrl').value   = ad.destination_url || '';
+      document.getElementById('adCtaText').value   = ad.cta_text || '';
+      document.getElementById('adDuration').value  = ad.display_duration;
+      document.getElementById('adPriority').value  = ad.priority;
+      document.getElementById('adWeight').value    = ad.weight;
+      document.getElementById('adIsActive').checked= !!ad.is_active;
+      document.getElementById('adStartAt').value   = ad.start_at.replace(' ','T').slice(0,16);
+      document.getElementById('adEndAt').value     = ad.end_at.replace(' ','T').slice(0,16);
+      onMediaTypeChange();
+      if (ad.media_type === 'image' && ad.media_url) {
+        const img = document.getElementById('uploadPreviewImg');
+        img.src = ad.media_url; img.style.display = 'block';
+      }
+      if (ad.media_type === 'video' && ad.media_url) {
+        const vid = document.getElementById('uploadPreviewVid');
+        vid.src = ad.media_url; vid.style.display = 'block';
+      }
+    }
+  } else {
+    document.getElementById('adModalTitle').textContent = 'New Featured Ad';
+    document.getElementById('adSaveBtn').textContent = 'Create Ad';
+  }
+  document.getElementById('adModal').classList.add('open');
+}
+function closeAdForm() { document.getElementById('adModal').classList.remove('open'); }
+
+function onMediaTypeChange() {
+  const t = document.getElementById('adMediaType').value;
+  document.getElementById('uploadIcon').textContent   = t === 'video' ? '▶' : '🖼';
+  document.getElementById('uploadZone').querySelector('div:nth-child(2)').textContent =
+    t === 'video' ? 'Click to upload video' : 'Click to upload image';
+  document.getElementById('uploadHint').textContent   =
+    t === 'video' ? 'MP4, MOV or WebM · max 50 MB' : 'JPG, PNG or WebP · max 5 MB';
+  document.getElementById('adMediaFile').accept =
+    t === 'video' ? 'video/mp4,video/quicktime,video/webm,video/*' : 'image/jpeg,image/png,image/webp,image/*';
+}
+
+async function handleMediaUpload(event) {
+  const file = event.target.files[0];
+  if (!file) return;
+  const prog = document.getElementById('uploadProgress');
+  prog.textContent = 'Uploading…';
+  const mediaType = document.getElementById('adMediaType').value;
+  const form = new FormData();
+  form.append('media', file);
+  form.append('media_type', mediaType);
+  try {
+    const r = await fetch(`${API}/admin/featured-ads-upload`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${token}` },
+      body: form,
+    });
+    const data = await r.json();
+    if (!data.success) throw new Error(data.message || 'Upload failed');
+    document.getElementById('adMediaUrl').value = data.url;
+    prog.textContent = '✅ Uploaded';
+    if (mediaType === 'image') {
+      const img = document.getElementById('uploadPreviewImg');
+      img.src = data.url; img.style.display = 'block';
+      document.getElementById('uploadPreviewVid').style.display = 'none';
+    } else {
+      const vid = document.getElementById('uploadPreviewVid');
+      vid.src = data.url; vid.style.display = 'block';
+      document.getElementById('uploadPreviewImg').style.display = 'none';
+    }
+  } catch(e) {
+    prog.textContent = '❌ ' + e.message;
+  }
+}
+
+async function saveAd() {
+  const id      = document.getElementById('adId').value;
+  const title   = document.getElementById('adTitle').value.trim();
+  const mediaUrl= document.getElementById('adMediaUrl').value.trim();
+  const startAt = document.getElementById('adStartAt').value;
+  const endAt   = document.getElementById('adEndAt').value;
+
+  if (!title)   { alert('Please enter a campaign title.'); return; }
+  if (!mediaUrl){ alert('Please upload a media file first.'); return; }
+  if (!startAt) { alert('Please set a start date.'); return; }
+  if (!endAt)   { alert('Please set an end date.'); return; }
+  if (new Date(endAt) <= new Date(startAt)) { alert('End date must be after start date.'); return; }
+
+  const body = {
+    title,
+    media_type:       document.getElementById('adMediaType').value,
+    media_url:        mediaUrl,
+    destination_url:  document.getElementById('adDestUrl').value.trim() || null,
+    cta_text:         document.getElementById('adCtaText').value.trim() || null,
+    start_at:         startAt.replace('T',' ') + ':00',
+    end_at:           endAt.replace('T',' ') + ':00',
+    display_duration: parseInt(document.getElementById('adDuration').value)||8,
+    priority:         parseInt(document.getElementById('adPriority').value)||10,
+    weight:           parseInt(document.getElementById('adWeight').value)||1,
+    is_active:        document.getElementById('adIsActive').checked ? 1 : 0,
+    business_id:      document.getElementById('adBusinessId').value || null,
+  };
+
+  const btn = document.getElementById('adSaveBtn');
+  btn.disabled = true; btn.textContent = 'Saving…';
+  try {
+    let r;
+    if (id) {
+      r = await authPut(`/admin/featured-ads/${id}`, body);
+    } else {
+      r = await authPost(`/admin/featured-ads`, body);
+    }
+    if (!r.success) throw new Error(r.message || 'Save failed');
+    toast(id ? '✅ Ad updated!' : '✅ Ad created!', 'ok');
+    closeAdForm();
+    await loadFeaturedAds();
+  } catch(e) {
+    toast('❌ ' + e.message, 'err');
+  } finally {
+    btn.disabled = false; btn.textContent = id ? 'Update Ad' : 'Create Ad';
+  }
+}
+
+// ── Auth helpers ──────────────────────────────────────────────────────────────
+async function authPost(path, body) {
+  const r = await fetch(API+path,{method:'POST',headers:{'Content-Type':'application/json',Authorization:`Bearer ${token}`},body:JSON.stringify(body)});
+  return r.json();
+}
+async function authPut(path, body) {
+  const r = await fetch(API+path,{method:'PUT',headers:{'Content-Type':'application/json',Authorization:`Bearer ${token}`},body:JSON.stringify(body)});
+  return r.json();
+}
+async function authPatch(path, body) {
+  const r = await fetch(API+path,{method:'PATCH',headers:{'Content-Type':'application/json',Authorization:`Bearer ${token}`},body:JSON.stringify(body)});
+  return r.json();
+}
+async function authDelete(path) {
+  const r = await fetch(API+path,{method:'DELETE',headers:{Authorization:`Bearer ${token}`}});
   return r.json();
 }
 </script>

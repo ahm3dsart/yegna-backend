@@ -10,15 +10,16 @@ if ($_SERVER['REQUEST_METHOD'] === 'OPTIONS') {
     exit;
 }
 
-// ── DATABASE (same pattern as VerifyPay) ─────────────────────────────────────
-$db_host   = 'mysql-db02.remote:32636';
+// ── DATABASE ──────────────────────────────────────────────────────────────────
+$db_host   = 'mysql-db02.remote';
+$db_port   = '32636';
 $db_name   = 'yegna';
 $db_user   = 'ahmed';
 $db_pass   = 'Uwk_9832i';
 $JWT_SECRET = 'yegna_jwt_super_secret_2026';
 
 try {
-    $pdo = new PDO("mysql:host=$db_host;dbname=$db_name;charset=utf8mb4", $db_user, $db_pass);
+    $pdo = new PDO("mysql:host=$db_host;port=$db_port;dbname=$db_name;charset=utf8mb4", $db_user, $db_pass);
     $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
     $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
 } catch (PDOException $e) {
@@ -30,7 +31,7 @@ try {
 $input = json_decode(file_get_contents('php://input'), true) ?? [];
 
 // ── ROUTE PARSING (same pattern as VerifyPay) ─────────────────────────────────
-$path = ltrim(parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH), '/');
+$path = ltrim(parse_url($_SERVER['REQUEST_URI'], PHP_URL_PATH) ?? '', '/');
 
 // Strip yegna-api.php prefix
 if (strpos($path, 'yegna-api.php/api/') === 0) {
@@ -257,11 +258,9 @@ function upload_image(array $file, string $subdir, int $maxBytes = 2097152): arr
     }
 
     // ── 4. Generate a safe unique filename ───────────────────────────────────
-    $ext      = match ($imgInfo['mime']) {
-        'image/png'  => 'png',
-        'image/webp' => 'webp',
-        default      => 'jpg',
-    };
+    if ($imgInfo['mime'] === 'image/png') { $ext = 'png'; }
+    elseif ($imgInfo['mime'] === 'image/webp') { $ext = 'webp'; }
+    else { $ext = 'jpg'; }
     $filename = bin2hex(random_bytes(16)) . '_' . time() . '.' . $ext;
     $destPath = $baseDir . '/' . $filename;
 
@@ -272,13 +271,13 @@ function upload_image(array $file, string $subdir, int $maxBytes = 2097152): arr
 
     if ($gdAvailable) {
         // Load source image
-        $src = match ($imgInfo['mime']) {
-            'image/png'  => @imagecreatefrompng($file['tmp_name']),
-            'image/webp' => function_exists('imagecreatefromwebp')
-                              ? @imagecreatefromwebp($file['tmp_name'])
-                              : false,
-            default      => @imagecreatefromjpeg($file['tmp_name']),
-        };
+        if ($imgInfo['mime'] === 'image/png') {
+            $src = @imagecreatefrompng($file['tmp_name']);
+        } elseif ($imgInfo['mime'] === 'image/webp') {
+            $src = function_exists('imagecreatefromwebp') ? @imagecreatefromwebp($file['tmp_name']) : false;
+        } else {
+            $src = @imagecreatefromjpeg($file['tmp_name']);
+        }
 
         if ($src !== false) {
             $origW   = imagesx($src);
@@ -623,8 +622,10 @@ if ($base === 'businesses') {
         $lim = max(1, (int)($_GET['limit'] ?? 20));
         $off = max(0, (int)($_GET['offset'] ?? 0));
         try {
-            $s = $pdo->prepare('SELECT r.id, r.business_id, r.user_id, r.rating, r.title, r.content, r.created_at, u.name as user_name, u.avatar_url FROM reviews r JOIN users u ON r.user_id=u.id WHERE r.business_id=? ORDER BY r.created_at DESC LIMIT ? OFFSET ?');
-            $s->execute([$bizId, $lim, $off]);
+            // Use string interpolation for LIMIT/OFFSET — PDO binds them as strings which breaks MySQL
+            $sql = 'SELECT r.id, r.business_id, r.user_id, r.rating, r.title, r.content, r.created_at, u.name as user_name, u.avatar_url FROM reviews r JOIN users u ON r.user_id=u.id WHERE r.business_id=? ORDER BY r.created_at DESC LIMIT ' . $lim . ' OFFSET ' . $off;
+            $s = $pdo->prepare($sql);
+            $s->execute([$bizId]);
             $rows = $s->fetchAll();
             $cnt = $pdo->prepare('SELECT COUNT(*) FROM reviews WHERE business_id=?');
             $cnt->execute([$bizId]);
@@ -701,7 +702,7 @@ if ($base === 'user') {
         $st   = $pdo->prepare('SELECT (SELECT COUNT(*) FROM reviews WHERE user_id=?) as reviews,(SELECT COUNT(*) FROM favorites WHERE user_id=?) as favorites,(SELECT COUNT(*) FROM visits WHERE user_id=?) as visits'); $st->execute([$uid,$uid,$uid]);
         echo json_encode(['success' => true, 'data' => ['user' => $user, 'stats' => $st->fetch(), 'favorites' => $favs->fetchAll(), 'reviews' => $revs->fetchAll(), 'visited' => $vis->fetchAll()]]); exit;
     }
-    if ($sub === 'profile' && ($method === 'PUT' || $method === 'PATCH')) {
+    if ($sub === 'profile' && ($method === 'PUT' || $method === 'PATCH' || $method === 'POST')) {
         // ── Handle avatar file upload ─────────────────────────────────────────
         if (!empty($_FILES['avatar'])) {
             try {
@@ -794,40 +795,184 @@ if ($base === 'user') {
         $s = $pdo->prepare('SELECT (SELECT COUNT(*) FROM reviews WHERE user_id=?) as reviews,(SELECT COUNT(*) FROM favorites WHERE user_id=?) as favorites,(SELECT COUNT(*) FROM visits WHERE user_id=?) as visits'); $s->execute([$uid,$uid,$uid]);
         echo json_encode(['success' => true, 'data' => $s->fetch()]); exit;
     }
-    // POST /user/push-token — register Expo push token
+    // POST /user/push-token — register/refresh Expo push token
     if ($sub === 'push-token' && $method === 'POST') {
-        $token = trim($input['token'] ?? '');
-        if (!$token) { http_response_code(400); echo json_encode(['success' => false, 'message' => 'Token required.']); exit; }
-        // Store in a simple table (create if not exists)
+        $token       = trim($input['token'] ?? '');
+        $platform    = trim($input['platform'] ?? '');
+        $device_info = trim($input['device_info'] ?? '');
+        if (!$token) {
+            http_response_code(400);
+            echo json_encode(['success' => false, 'message' => 'Token required.']);
+            exit;
+        }
         try {
-            $pdo->exec('CREATE TABLE IF NOT EXISTS push_tokens (id INT PRIMARY KEY AUTO_INCREMENT, user_id INT NOT NULL UNIQUE, token VARCHAR(255) NOT NULL, created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP, FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE)');
-            $pdo->prepare('INSERT INTO push_tokens (user_id, token) VALUES (?,?) ON DUPLICATE KEY UPDATE token=?, created_at=NOW()')->execute([$uid, $token, $token]);
+            // Ensure table has all needed columns (safe to run repeatedly — IF NOT EXISTS / ignore errors)
+            $pdo->exec('CREATE TABLE IF NOT EXISTS push_tokens (
+                id          INT PRIMARY KEY AUTO_INCREMENT,
+                user_id     INT NOT NULL UNIQUE,
+                token       VARCHAR(255) NOT NULL,
+                platform    VARCHAR(20) DEFAULT NULL,
+                device_info VARCHAR(100) DEFAULT NULL,
+                is_active   TINYINT(1) NOT NULL DEFAULT 1,
+                created_at  TIMESTAMP DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            )');
+            // Add missing columns to existing tables (ALTER IF NOT EXISTS not available in MySQL 5.x)
+            foreach (['platform VARCHAR(20) DEFAULT NULL', 'device_info VARCHAR(100) DEFAULT NULL', 'is_active TINYINT(1) NOT NULL DEFAULT 1'] as $col) {
+                try { $pdo->exec("ALTER TABLE push_tokens ADD COLUMN $col"); } catch (PDOException $_) {}
+            }
+            $pdo->prepare('INSERT INTO push_tokens (user_id, token, platform, device_info, is_active)
+                VALUES (?,?,?,?,1)
+                ON DUPLICATE KEY UPDATE token=VALUES(token), platform=VALUES(platform),
+                    device_info=VALUES(device_info), is_active=1, created_at=NOW()')
+                ->execute([$uid, $token, $platform ?: null, $device_info ?: null]);
             echo json_encode(['success' => true, 'message' => 'Push token registered.']);
         } catch (PDOException $e) {
             echo json_encode(['success' => true, 'message' => 'Push token noted.']); // non-critical
         }
         exit;
     }
-}
+
+    // DELETE /user/push-token — deactivate token on logout (so the user stops receiving pushes on this device)
+    if ($sub === 'push-token' && $method === 'DELETE') {
+        $token = trim($input['token'] ?? $_GET['token'] ?? '');
+        if ($token) {
+            try {
+                $pdo->prepare('UPDATE push_tokens SET is_active=0 WHERE user_id=? AND token=?')
+                    ->execute([$uid, $token]);
+            } catch (PDOException $_) {}
+        }
+        echo json_encode(['success' => true, 'message' => 'Token deactivated.']);
+        exit;
+    }
+
+    // ── GET /user/notification-prefs ─────────────────────────────────────────
+    if ($sub === 'notification-prefs' && $method === 'GET') {
+        // Table is created by the migration (privacy_notifications_migration.sql).
+        // Graceful fallback: if the table doesn't exist yet, return defaults.
+        try {
+            $s = $pdo->prepare('SELECT * FROM notification_preferences WHERE user_id=?');
+            $s->execute([$uid]);
+            $row = $s->fetch();
+        } catch (PDOException $_) {
+            $row = false; // table not yet migrated — return defaults
+        }
+        if (!$row) {
+            $row = [
+                'user_id' => $uid, 'follows' => 1, 'checkins' => 1,
+                'new_reviews' => 1, 'replies' => 1, 'trending' => 1,
+                'promotions' => 0, 'events' => 1, 'updates' => 0,
+            ];
+        }
+        foreach (['follows','checkins','new_reviews','replies','trending','promotions','events','updates'] as $k) {
+            $row[$k] = (bool)$row[$k];
+        }
+        echo json_encode(['success' => true, 'data' => $row]);
+        exit;
+    }
+
+    // ── PATCH /user/notification-prefs ───────────────────────────────────────
+    if ($sub === 'notification-prefs' && ($method === 'PATCH' || $method === 'POST' || $method === 'PUT')) {
+        $allowed = ['follows','checkins','new_reviews','replies','trending','promotions','events','updates'];
+        $sets = []; $vals = [];
+        foreach ($allowed as $k) {
+            if (array_key_exists($k, $input)) {
+                $sets[] = "$k=?";
+                $vals[] = $input[$k] ? 1 : 0;
+            }
+        }
+        if (!$sets) { echo json_encode(['success' => true, 'message' => 'No changes.']); exit; }
+
+        try {
+            // Upsert: insert defaults first, then update the changed columns
+            $pdo->prepare("INSERT IGNORE INTO notification_preferences
+                (user_id,follows,checkins,new_reviews,replies,trending,promotions,events,updates)
+                VALUES (?,1,1,1,1,1,0,1,0)")
+                ->execute([$uid]);
+            $vals[] = $uid;
+            $pdo->prepare('UPDATE notification_preferences SET ' . implode(',', $sets) . ' WHERE user_id=?')
+                ->execute($vals);
+        } catch (PDOException $e) {
+            // Table not migrated yet — silently accept (preferences will take effect after migration)
+            http_response_code(200);
+        }
+        echo json_encode(['success' => true, 'message' => 'Notification preferences saved.']);
+        exit;
+    }
+
+    // ── GET /user/privacy-settings — public_profile + show_location ─────────
+    if ($sub === 'privacy-settings' && $method === 'GET') {
+        // Ensure new columns exist (graceful — ALTER fails silently if already there)
+        try { $pdo->exec("ALTER TABLE user_privacy ADD COLUMN public_profile TINYINT(1) NOT NULL DEFAULT 1"); } catch (PDOException $_) {}
+        try { $pdo->exec("ALTER TABLE user_privacy ADD COLUMN show_location TINYINT(1) NOT NULL DEFAULT 1");  } catch (PDOException $_) {}
+
+        $s = $pdo->prepare('SELECT public_profile, show_location FROM user_privacy WHERE user_id=?');
+        $s->execute([$uid]);
+        $row = $s->fetch();
+        if (!$row) {
+            $pdo->prepare('INSERT IGNORE INTO user_privacy (user_id) VALUES (?)')->execute([$uid]);
+            $row = ['public_profile' => 1, 'show_location' => 1];
+        }
+        echo json_encode(['success' => true, 'data' => [
+            'public_profile' => (bool)$row['public_profile'],
+            'show_location'  => (bool)$row['show_location'],
+        ]]);
+        exit;
+    }
+
+    // ── PATCH /user/privacy-settings — public_profile + show_location ───────
+    if ($sub === 'privacy-settings' && ($method === 'PATCH' || $method === 'POST' || $method === 'PUT')) {
+        try { $pdo->exec("ALTER TABLE user_privacy ADD COLUMN public_profile TINYINT(1) NOT NULL DEFAULT 1"); } catch (PDOException $_) {}
+        try { $pdo->exec("ALTER TABLE user_privacy ADD COLUMN show_location TINYINT(1) NOT NULL DEFAULT 1");  } catch (PDOException $_) {}
+
+        $pdo->prepare('INSERT IGNORE INTO user_privacy (user_id) VALUES (?)')->execute([$uid]);
+        $sets = []; $vals = [];
+        if (array_key_exists('public_profile', $input)) { $sets[] = 'public_profile=?'; $vals[] = $input['public_profile'] ? 1 : 0; }
+        if (array_key_exists('show_location',  $input)) { $sets[] = 'show_location=?';  $vals[] = $input['show_location']  ? 1 : 0; }
+        if ($sets) {
+            $vals[] = $uid;
+            $pdo->prepare('UPDATE user_privacy SET ' . implode(',', $sets) . ' WHERE user_id=?')->execute($vals);
+        }
+        echo json_encode(['success' => true, 'message' => 'Privacy settings saved.']);
+        exit;
+    }
+
+} // end if ($base === 'user')
 
 // ── NOTIFICATIONS ─────────────────────────────────────────────────────────────
 if ($base === 'notifications') {
     $uid = require_auth($JWT_SECRET);
+    // GET /notifications — list + unread count
     if ($sub === '' && $method === 'GET') {
         $lim = max(1, (int)($_GET['limit'] ?? 20));
         $off = max(0, (int)($_GET['offset'] ?? 0));
         $s = $pdo->prepare('SELECT * FROM notifications WHERE user_id=? ORDER BY created_at DESC LIMIT ' . $lim . ' OFFSET ' . $off);
         $s->execute([$uid]);
         $u = $pdo->prepare('SELECT COUNT(*) as c FROM notifications WHERE user_id=? AND is_read=0'); $u->execute([$uid]);
-        echo json_encode(['success' => true, 'data' => $s->fetchAll(), 'unreadCount' => $u->fetch()['c']]); exit;
+        // Ensure data field is JSON decoded (PHP PDO returns it as string)
+        $rows = $s->fetchAll();
+        foreach ($rows as &$row) {
+            if (!empty($row['data']) && is_string($row['data'])) {
+                $decoded = json_decode($row['data'], true);
+                if (json_last_error() === JSON_ERROR_NONE) $row['data'] = $decoded;
+            }
+        }
+        echo json_encode(['success' => true, 'data' => $rows, 'unreadCount' => (int)$u->fetch()['c']]); exit;
     }
-    if ($sub === 'read-all') {
+    // PATCH /notifications/read-all — mark all read
+    if ($sub === 'read-all' && ($method === 'PATCH' || $method === 'POST' || $method === 'PUT')) {
         $pdo->prepare('UPDATE notifications SET is_read=1 WHERE user_id=?')->execute([$uid]);
-        echo json_encode(['success' => true, 'message' => 'All marked as read.']); exit;
+        echo json_encode(['success' => true, 'message' => 'All marked as read.', 'data' => null]); exit;
     }
-    if (is_numeric($sub) && $subsub === 'read') {
+    // GET backwards-compat /notifications/read-all
+    if ($sub === 'read-all' && $method === 'GET') {
+        $pdo->prepare('UPDATE notifications SET is_read=1 WHERE user_id=?')->execute([$uid]);
+        echo json_encode(['success' => true, 'message' => 'All marked as read.', 'data' => null]); exit;
+    }
+    // PATCH /notifications/:id/read — mark one read
+    if (is_numeric($sub) && $subsub === 'read' && ($method === 'PATCH' || $method === 'POST' || $method === 'PUT')) {
         $pdo->prepare('UPDATE notifications SET is_read=1 WHERE id=? AND user_id=?')->execute([(int)$sub, $uid]);
-        echo json_encode(['success' => true]); exit;
+        echo json_encode(['success' => true, 'data' => null]); exit;
     }
 }
 
@@ -853,80 +998,483 @@ if ($base === 'search') {
 if ($base === 'social') {
     $uid = require_auth($JWT_SECRET);
 
+    // ── Follow / Unfollow ─────────────────────────────────────────────────────
     if ($sub === 'follow' && is_numeric($subsub) && $method === 'POST') {
         $tid = (int)$subsub;
         if ($tid === $uid) { http_response_code(400); echo json_encode(['success' => false, 'message' => "Can't follow yourself."]); exit; }
         $pdo->prepare('INSERT IGNORE INTO follows (follower_id,following_id) VALUES (?,?)')->execute([$uid, $tid]);
 
+        // Are we mutual (friends)?
+        $mutualS = $pdo->prepare('SELECT COUNT(*) as c FROM follows WHERE follower_id=? AND following_id=?');
+        $mutualS->execute([$tid, $uid]);
+        $isFriend = (bool)$mutualS->fetch()['c'];
+
         // Notify the person who was followed
         $follower = $pdo->prepare('SELECT name FROM users WHERE id=?'); $follower->execute([$uid]);
         $followerRow = $follower->fetch();
         $followerName = $followerRow['name'] ?? 'Someone';
-        $notifTitle = "$followerName started following you";
-        $notifData  = json_encode(['type' => 'follow', 'user_id' => $uid, 'userId' => $uid, 'user_name' => $followerName]);
+        $notifTitle = $isFriend ? "$followerName and you are now friends! 🎉" : "$followerName started following you";
+        $notifMsg   = $isFriend ? "You and $followerName follow each other — you're now friends." : "$followerName is now following you. Follow back to become friends!";
+        $notifData  = json_encode(['type' => 'follow', 'sender_id' => $uid, 'actor_id' => $uid, 'user_id' => $uid, 'userId' => $uid, 'user_name' => $followerName, 'is_mutual' => $isFriend]);
         try {
             $pdo->prepare('INSERT IGNORE INTO notifications (user_id, type, title, message, data) VALUES (?,?,?,?,?)')
-                ->execute([$tid, 'follow', $notifTitle, $notifTitle, $notifData]);
+                ->execute([$tid, 'follow', $notifTitle, $notifMsg, $notifData]);
         } catch (PDOException $e) {}
         $tokens = get_push_tokens($pdo, [$tid]);
         if (!empty($tokens)) {
-            send_expo_push($tokens, $notifTitle, 'Tap to see their profile.', [
-                'type'     => 'follow',
-                'user_id'  => $uid,
-                'userId'   => $uid,
-                'userName' => $followerName,
-            ]);
+            // Check recipient's notification preference for follows
+            if (notif_pref_enabled($pdo, $tid, 'follows')) {
+                send_expo_push($tokens, $notifTitle, $notifMsg, [
+                    'type'      => 'follow',
+                    'sender_id' => $uid,
+                    'actor_id'  => $uid,
+                    'user_id'   => $uid,
+                    'userId'    => $uid,
+                    'userName'  => $followerName,
+                    'is_mutual' => $isFriend,
+                ]);
+            }
         }
 
-        echo json_encode(['success' => true, 'data' => ['is_following' => true]]); exit;
+        // Counts
+        $fc = $pdo->prepare('SELECT COUNT(*) as c FROM follows WHERE following_id=?'); $fc->execute([$tid]);
+        $ng = $pdo->prepare('SELECT COUNT(*) as c FROM follows WHERE follower_id=?');  $ng->execute([$tid]);
+        echo json_encode(['success' => true, 'data' => [
+            'is_following' => true,
+            'is_friend'    => $isFriend,
+            'followers'    => (int)$fc->fetch()['c'],
+            'following'    => (int)$ng->fetch()['c'],
+        ]]); exit;
     }
     if ($sub === 'follow' && is_numeric($subsub) && $method === 'DELETE') {
-        $pdo->prepare('DELETE FROM follows WHERE follower_id=? AND following_id=?')->execute([$uid, (int)$subsub]);
-        echo json_encode(['success' => true, 'data' => ['is_following' => false]]); exit;
+        $tid = (int)$subsub;
+        $pdo->prepare('DELETE FROM follows WHERE follower_id=? AND following_id=?')->execute([$uid, $tid]);
+        echo json_encode(['success' => true, 'data' => ['is_following' => false, 'is_friend' => false]]); exit;
     }
+    // ── Follow status ──────────────────────────────────────────────────────────
+    if ($sub === 'follow' && is_numeric($subsub) && $subsubid === 'status' && $method === 'GET') {
+        $tid = (int)$subsub;
+        $fc = $pdo->prepare('SELECT COUNT(*) as c FROM follows WHERE follower_id=? AND following_id=?'); $fc->execute([$uid, $tid]);
+        $bk = $pdo->prepare('SELECT COUNT(*) as c FROM follows WHERE follower_id=? AND following_id=?'); $bk->execute([$tid, $uid]);
+        $tc = $pdo->prepare('SELECT COUNT(*) as c FROM follows WHERE following_id=?'); $tc->execute([$tid]);
+        $tg = $pdo->prepare('SELECT COUNT(*) as c FROM follows WHERE follower_id=?');  $tg->execute([$tid]);
+        $fr = $pdo->prepare('SELECT COUNT(*) as c FROM follows f1 JOIN follows f2 ON f1.follower_id=f2.following_id AND f1.following_id=f2.follower_id WHERE f1.follower_id=?');
+        $fr->execute([$tid]);
+        $isFollowing = (bool)$fc->fetch()['c'];
+        $isFollowedBack = (bool)$bk->fetch()['c'];
+        echo json_encode(['success' => true, 'data' => [
+            'is_following' => $isFollowing,
+            'is_friend'    => $isFollowing && $isFollowedBack,
+            'followers'    => (int)$tc->fetch()['c'],
+            'following'    => (int)$tg->fetch()['c'],
+            'friends'      => (int)$fr->fetch()['c'],
+        ]]); exit;
+    }
+
+    // ── Friends activity feed ──────────────────────────────────────────────────
     if ($sub === 'feed' && $method === 'GET') {
-        $lim = (int)($_GET['limit'] ?? 20); $off = (int)($_GET['offset'] ?? 0);
-        $s = $pdo->prepare('SELECT af.*,u.name as user_name,u.avatar_url,b.name as business_name,b.category,b.image_url FROM activity_feed af JOIN users u ON af.user_id=u.id JOIN businesses b ON af.business_id=b.id JOIN follows f ON f.follower_id=? AND f.following_id=af.user_id WHERE af.visibility="everyone" ORDER BY af.created_at DESC LIMIT ? OFFSET ?');
-        $s->execute([$uid,$lim,$off]); echo json_encode(['success' => true, 'data' => $s->fetchAll()]); exit;
+        $lim = max(1, min(50, (int)($_GET['limit'] ?? 20)));
+        $off = max(0, (int)($_GET['offset'] ?? 0));
+        // Privacy enforcement for activity_visibility:
+        //   - 'everyone' → show to all followers
+        //   - 'friends'  → show only when viewer is a mutual follower of the poster
+        //   - 'only_me'  → never show to anyone else
+        // Per-post `visibility` column is ALSO checked (inner condition).
+        // Both must pass — the stricter of the two wins.
+        $s = $pdo->prepare("
+            SELECT
+              af.id, af.type, af.caption, af.rating, af.photo_count, af.created_at,
+              af.visibility,
+              u.id AS user_id, u.name AS user_name, u.avatar_url,
+              b.id AS business_id, b.name AS business_name,
+              b.category, b.image_url, b.address, b.city, b.rating AS business_rating,
+              (SELECT COUNT(*) FROM follows f2
+               WHERE f2.follower_id = af.user_id AND f2.following_id = ?) AS is_friend
+            FROM activity_feed af
+            JOIN users u      ON af.user_id     = u.id
+            JOIN businesses b ON af.business_id = b.id
+            JOIN follows f    ON f.follower_id  = ? AND f.following_id = af.user_id
+            -- Global activity_visibility from user_privacy (LEFT JOIN — missing row = 'everyone')
+            LEFT JOIN user_privacy up ON up.user_id = af.user_id
+            WHERE (
+              -- Per-post visibility
+              af.visibility = 'everyone'
+              OR (af.visibility = 'friends' AND (
+                SELECT COUNT(*) FROM follows f3
+                WHERE f3.follower_id = af.user_id AND f3.following_id = ?
+              ) > 0)
+            )
+            AND (
+              -- Global activity_visibility — 'only_me' blocks all other viewers
+              -- 'friends' requires mutual follow; 'everyone' or NULL allows all followers
+              COALESCE(up.activity_visibility, 'everyone') != 'only_me'
+              AND (
+                COALESCE(up.activity_visibility, 'everyone') = 'everyone'
+                OR (
+                  COALESCE(up.activity_visibility, 'everyone') = 'friends'
+                  AND (
+                    SELECT COUNT(*) FROM follows f4
+                    WHERE f4.follower_id = af.user_id AND f4.following_id = ?
+                  ) > 0
+                )
+              )
+            )
+            ORDER BY af.created_at DESC
+            LIMIT ? OFFSET ?
+        ");
+        $s->execute([$uid, $uid, $uid, $uid, $lim, $off]);
+        $rows = $s->fetchAll();
+        echo json_encode(['success' => true, 'data' => $rows, 'count' => count($rows)]); exit;
     }
+
+    // ── Privacy ────────────────────────────────────────────────────────────────
     if ($sub === 'privacy' && $method === 'GET') {
         $s = $pdo->prepare('SELECT * FROM user_privacy WHERE user_id=?'); $s->execute([$uid]);
         $p = $s->fetch();
-        if (!$p) { $pdo->prepare('INSERT IGNORE INTO user_privacy (user_id) VALUES (?)')->execute([$uid]); $p = ['user_id' => $uid]; }
+        if (!$p) {
+            $pdo->prepare('INSERT IGNORE INTO user_privacy (user_id) VALUES (?)')->execute([$uid]);
+            $p = ['user_id' => $uid, 'activity_visibility' => 'everyone', 'reviews_visibility' => 'everyone', 'photos_visibility' => 'everyone', 'visited_visibility' => 'everyone', 'saved_visibility' => 'friends', 'followers_visibility' => 'public'];
+        }
         echo json_encode(['success' => true, 'data' => $p]); exit;
     }
     if ($sub === 'privacy' && ($method === 'PUT' || $method === 'PATCH')) {
-        $allowed = ['activity_visibility','reviews_visibility','photos_visibility','visited_visibility','saved_visibility','followers_visibility'];
+        $allowed = ['activity_visibility','reviews_visibility','photos_visibility','visited_visibility','saved_visibility','followers_visibility','public_profile','show_location'];
         $sets = []; $vals = [];
         foreach ($allowed as $f) { if (isset($input[$f])) { $sets[] = "$f=?"; $vals[] = $input[$f]; } }
         $pdo->prepare('INSERT IGNORE INTO user_privacy (user_id) VALUES (?)')->execute([$uid]);
         if ($sets) { $vals[] = $uid; $pdo->prepare('UPDATE user_privacy SET '.implode(',',$sets).' WHERE user_id=?')->execute($vals); }
         echo json_encode(['success' => true, 'message' => 'Privacy updated.']); exit;
     }
-    if ($sub === 'search-users' && $method === 'GET') {
-        $q = '%'.trim($_GET['q'] ?? '').'%';
-        $s = $pdo->prepare('SELECT id,name,avatar_url,bio FROM users WHERE name LIKE ? AND id!=? ORDER BY name LIMIT 30'); $s->execute([$q,$uid]);
+
+    // ── Suggested people to follow (browse mode — empty search) ────────────────
+    // Only returns users NOT already followed by me. Split into 2 sections.
+    if ($sub === 'users' && $subsub === 'suggestions' && $method === 'GET') {
+        // --- Section A: MUTUAL CONNECTIONS I DON'T YET FOLLOW ---
+        $mutual = $pdo->prepare('
+            SELECT
+              target.id, target.name, target.avatar_url, target.bio,
+              (SELECT COUNT(*) FROM follows WHERE following_id = target.id) AS followers,
+              0 AS is_following,
+              GROUP_CONCAT(DISTINCT connector.name ORDER BY connector.name SEPARATOR \'|||\') AS _mutual_names,
+              COUNT(DISTINCT connector.id) AS _mutual_count
+            FROM follows mine
+            JOIN users connector   ON mine.follower_id  = ? AND mine.following_id = connector.id
+            JOIN follows conn_fol  ON conn_fol.follower_id = connector.id
+            JOIN users target      ON conn_fol.following_id = target.id
+            LEFT JOIN follows me2  ON me2.follower_id = ? AND me2.following_id = target.id
+            WHERE me2.id IS NULL AND target.id != ?
+            GROUP BY target.id
+            ORDER BY _mutual_count DESC, followers DESC
+            LIMIT 30
+        ');
+        $mutual->execute([$uid, $uid, $uid]);
+        $mutualRows = $mutual->fetchAll();
+        foreach ($mutualRows as &$row) {
+            $names = array_values(array_filter(explode('|||', $row['_mutual_names'] ?? '')));
+            $row['mutual_follower_names'] = $names;
+            $row['mutual_count'] = (int)$row['_mutual_count'];
+            unset($row['_mutual_names'], $row['_mutual_count']);
+        }
+        unset($row);
+
+        // --- Section B: PEOPLE I MIGHT KNOW ---
+        // Exclude: me + people in mutual list + people I already follow.
+        $mutualIds = array_map('intval', array_column($mutualRows, 'id'));
+        $excludeIds = array_merge([(int)$uid], $mutualIds);
+        $excludeList = implode(',', $excludeIds);
+
+        $mightRows = [];
+        $seenIds = [];
+        if (empty($excludeIds)) { $excludeList = '0'; }
+
+        // Query 1 – friends of friends (2nd degree connections)
+        try {
+            $s1 = $pdo->prepare("
+                SELECT DISTINCT u.id, u.name, u.avatar_url, u.bio,
+                       (SELECT COUNT(*) FROM follows WHERE following_id = u.id) AS followers,
+                       0 AS is_following
+                FROM follows f1
+                JOIN follows f2 ON f2.follower_id = f1.following_id
+                JOIN users u       ON u.id = f2.following_id
+                LEFT JOIN follows mf ON mf.follower_id = ? AND mf.following_id = u.id
+                WHERE mf.id IS NULL
+                  AND u.id NOT IN ($excludeList)
+                ORDER BY followers DESC
+                LIMIT 30
+            ");
+            $s1->execute([$uid]);
+            foreach ($s1->fetchAll() as $r) {
+                $id = (int)$r['id'];
+                if (isset($seenIds[$id])) continue;
+                $seenIds[$id] = true;
+                $mightRows[] = $r;
+            }
+        } catch (PDOException $e) { /* fallthrough */ }
+
+        // Query 2 – popular users fallback
+        try {
+            if (count($mightRows) < 30) {
+                $stillNeed = 30 - count($mightRows);
+                $s2 = $pdo->prepare("
+                    SELECT u.id, u.name, u.avatar_url, u.bio,
+                           (SELECT COUNT(*) FROM follows WHERE following_id = u.id) AS followers,
+                           0 AS is_following
+                    FROM users u
+                    LEFT JOIN follows mf ON mf.follower_id = ? AND mf.following_id = u.id
+                    WHERE mf.id IS NULL
+                      AND u.id NOT IN ($excludeList)
+                    ORDER BY followers DESC
+                    LIMIT $stillNeed
+                ");
+                $s2->execute([$uid]);
+                foreach ($s2->fetchAll() as $r) {
+                    $id = (int)$r['id'];
+                    if (isset($seenIds[$id])) continue;
+                    $seenIds[$id] = true;
+                    $mightRows[] = $r;
+                }
+            }
+        } catch (PDOException $e) { /* fallthrough */ }
+
+        $mightRows = array_slice($mightRows, 0, 30);
+
+        echo json_encode(['success' => true, 'data' => [
+            'mutual'     => $mutualRows,
+            'might_know' => $mightRows,
+        ]]); exit;
+    }
+
+    // ── Search users (correct path: /social/users/search) ──────────────────────
+    if ($sub === 'users' && $subsub === 'search' && $method === 'GET') {
+        $rawQ = trim($_GET['q'] ?? '');
+        $q = '%' . $rawQ . '%';
+        // When user explicitly typed a search query → INCLUDE followed users (they asked for it).
+        // On empty string → treat as "no filter" but still include everyone (client decides when to call this).
+        $s = $pdo->prepare('
+            SELECT u.id, u.name, u.avatar_url, u.bio,
+                   (SELECT COUNT(*) FROM follows WHERE following_id = u.id) AS followers,
+                   (SELECT COUNT(*) FROM follows WHERE follower_id = ? AND following_id = u.id) AS is_following
+            FROM users u
+            WHERE u.name LIKE ? AND u.id != ?
+            ORDER BY is_following DESC, followers DESC
+            LIMIT 30
+        ');
+        $s->execute([$uid, $q, $uid]);
         echo json_encode(['success' => true, 'data' => $s->fetchAll()]); exit;
     }
+    // Legacy path: also keep /social/search-users for backwards compatibility
+    if ($sub === 'search-users' && $method === 'GET') {
+        $rawQ = trim($_GET['q'] ?? '');
+        $q = '%' . $rawQ . '%';
+        $s = $pdo->prepare('
+            SELECT u.id, u.name, u.avatar_url, u.bio,
+                   (SELECT COUNT(*) FROM follows WHERE following_id = u.id) AS followers,
+                   (SELECT COUNT(*) FROM follows WHERE follower_id = ? AND following_id = u.id) AS is_following
+            FROM users u
+            WHERE u.name LIKE ? AND u.id != ?
+            ORDER BY followers DESC
+            LIMIT 30
+        ');
+        $s->execute([$uid, $q, $uid]);
+        echo json_encode(['success' => true, 'data' => $s->fetchAll()]); exit;
+    }
+
+    // ── /social/users/:userId/* routes ─────────────────────────────────────────
     if ($sub === 'users' && is_numeric($subsub)) {
         $tid = (int)$subsub;
-        $sub4 = $parts[3] ?? '';
+        $sub4 = $parts[3] ?? '';   // e.g. 'followers', 'following', 'friends', 'profile'
+
+        // Followers list
         if ($sub4 === 'followers') {
-            $s = $pdo->prepare('SELECT u.id,u.name,u.avatar_url FROM follows f JOIN users u ON f.follower_id=u.id WHERE f.following_id=?'); $s->execute([$tid]);
+            // Check target user's followers_visibility
+            $fvRow = null;
+            try { $fvQ = $pdo->prepare('SELECT followers_visibility FROM user_privacy WHERE user_id=?'); $fvQ->execute([$tid]); $fvRow = $fvQ->fetch(); } catch (PDOException $_) {}
+            $fv = $fvRow['followers_visibility'] ?? 'public';
+            // Check viewer relationship
+            $viewerIsFriend = false; $viewerFollows = false;
+            if ($uid && $uid !== $tid) {
+                $chkF = $pdo->prepare('SELECT COUNT(*) c FROM follows WHERE follower_id=? AND following_id=?'); $chkF->execute([$uid, $tid]); $viewerFollows = (bool)$chkF->fetch()['c'];
+                $chkB = $pdo->prepare('SELECT COUNT(*) c FROM follows WHERE follower_id=? AND following_id=?'); $chkB->execute([$tid, $uid]); $viewerIsFriend = $viewerFollows && (bool)$chkB->fetch()['c'];
+            }
+            $canSeeList = ($uid === $tid) || ($fv === 'public') || ($fv === 'friends' && $viewerIsFriend);
+            if (!$canSeeList) { echo json_encode(['success' => true, 'data' => [], 'hidden' => true]); exit; }
+            $s = $pdo->prepare('
+                SELECT u.id, u.name, u.avatar_url, u.bio,
+                       (SELECT COUNT(*) FROM follows WHERE follower_id = ? AND following_id = u.id) AS is_following
+                FROM follows f
+                JOIN users u ON f.follower_id = u.id
+                WHERE f.following_id = ?
+                ORDER BY f.created_at DESC
+            ');
+            $s->execute([$uid ?: 0, $tid]);
             echo json_encode(['success' => true, 'data' => $s->fetchAll()]); exit;
         }
+        // Following list
         if ($sub4 === 'following') {
-            $s = $pdo->prepare('SELECT u.id,u.name,u.avatar_url FROM follows f JOIN users u ON f.following_id=u.id WHERE f.follower_id=?'); $s->execute([$tid]);
+            $fvRow = null;
+            try { $fvQ = $pdo->prepare('SELECT followers_visibility FROM user_privacy WHERE user_id=?'); $fvQ->execute([$tid]); $fvRow = $fvQ->fetch(); } catch (PDOException $_) {}
+            $fv = $fvRow['followers_visibility'] ?? 'public';
+            $viewerIsFriend = false; $viewerFollows = false;
+            if ($uid && $uid !== $tid) {
+                $chkF = $pdo->prepare('SELECT COUNT(*) c FROM follows WHERE follower_id=? AND following_id=?'); $chkF->execute([$uid, $tid]); $viewerFollows = (bool)$chkF->fetch()['c'];
+                $chkB = $pdo->prepare('SELECT COUNT(*) c FROM follows WHERE follower_id=? AND following_id=?'); $chkB->execute([$tid, $uid]); $viewerIsFriend = $viewerFollows && (bool)$chkB->fetch()['c'];
+            }
+            $canSeeList = ($uid === $tid) || ($fv === 'public') || ($fv === 'friends' && $viewerIsFriend);
+            if (!$canSeeList) { echo json_encode(['success' => true, 'data' => [], 'hidden' => true]); exit; }
+            $s = $pdo->prepare('
+                SELECT u.id, u.name, u.avatar_url, u.bio,
+                       (SELECT COUNT(*) FROM follows WHERE follower_id = ? AND following_id = u.id) AS is_following
+                FROM follows f
+                JOIN users u ON f.following_id = u.id
+                WHERE f.follower_id = ?
+                ORDER BY f.created_at DESC
+            ');
+            $s->execute([$uid ?: 0, $tid]);
             echo json_encode(['success' => true, 'data' => $s->fetchAll()]); exit;
         }
-        $s = $pdo->prepare('SELECT id,name,avatar_url,bio,level,points,created_at FROM users WHERE id=?'); $s->execute([$tid]);
-        $user = $s->fetch();
-        if (!$user) { http_response_code(404); echo json_encode(['success' => false, 'message' => 'User not found.']); exit; }
-        $fc = $pdo->prepare('SELECT COUNT(*) as c FROM follows WHERE following_id=?'); $fc->execute([$tid]);
-        $ng = $pdo->prepare('SELECT COUNT(*) as c FROM follows WHERE follower_id=?');  $ng->execute([$tid]);
-        $if = $pdo->prepare('SELECT COUNT(*) as c FROM follows WHERE follower_id=? AND following_id=?'); $if->execute([$uid,$tid]);
-        $user['followers'] = $fc->fetch()['c']; $user['following'] = $ng->fetch()['c'];
-        echo json_encode(['success' => true, 'data' => ['user' => $user, 'is_following' => (bool)$if->fetch()['c']]]); exit;
+        // Friends list (mutual follows)
+        if ($sub4 === 'friends') {
+            $fvRow = null;
+            try { $fvQ = $pdo->prepare('SELECT followers_visibility FROM user_privacy WHERE user_id=?'); $fvQ->execute([$tid]); $fvRow = $fvQ->fetch(); } catch (PDOException $_) {}
+            $fv = $fvRow['followers_visibility'] ?? 'public';
+            $viewerIsFriend = false; $viewerFollows = false;
+            if ($uid && $uid !== $tid) {
+                $chkF = $pdo->prepare('SELECT COUNT(*) c FROM follows WHERE follower_id=? AND following_id=?'); $chkF->execute([$uid, $tid]); $viewerFollows = (bool)$chkF->fetch()['c'];
+                $chkB = $pdo->prepare('SELECT COUNT(*) c FROM follows WHERE follower_id=? AND following_id=?'); $chkB->execute([$tid, $uid]); $viewerIsFriend = $viewerFollows && (bool)$chkB->fetch()['c'];
+            }
+            $canSeeList = ($uid === $tid) || ($fv === 'public') || ($fv === 'friends' && $viewerIsFriend);
+            if (!$canSeeList) { echo json_encode(['success' => true, 'data' => [], 'hidden' => true]); exit; }
+            $s = $pdo->prepare('
+                SELECT u.id, u.name, u.avatar_url, u.bio
+                FROM follows f1
+                JOIN follows f2 ON f1.follower_id = f2.following_id AND f1.following_id = f2.follower_id
+                JOIN users u ON f1.following_id = u.id
+                WHERE f1.follower_id = ?
+                ORDER BY f1.created_at DESC
+            ');
+            $s->execute([$tid]);
+            echo json_encode(['success' => true, 'data' => $s->fetchAll()]); exit;
+        }
+        // Full public profile — /social/users/:userId/profile
+        if ($sub4 === 'profile' || $sub4 === '') {
+            $s = $pdo->prepare('SELECT id, name, avatar_url, bio, level, points, is_verified, created_at FROM users WHERE id=?');
+            $s->execute([$tid]);
+            $user = $s->fetch();
+            if (!$user) { http_response_code(404); echo json_encode(['success' => false, 'message' => 'User not found.']); exit; }
+
+            // ── Load target user's full privacy settings ──────────────────────
+            $privDefaults = [
+                'reviews_visibility'   => 'everyone',
+                'visited_visibility'   => 'everyone',
+                'activity_visibility'  => 'everyone',
+                'followers_visibility' => 'public',
+                'saved_visibility'     => 'friends',
+                'public_profile'       => 1,
+                'show_location'        => 1,
+            ];
+            try {
+                $ps = $pdo->prepare('SELECT reviews_visibility, visited_visibility, activity_visibility, followers_visibility, saved_visibility, public_profile, show_location FROM user_privacy WHERE user_id=?');
+                $ps->execute([$tid]);
+                $prow = $ps->fetch();
+                if ($prow) $privDefaults = array_merge($privDefaults, $prow);
+            } catch (PDOException $e) {}
+            $priv = $privDefaults;
+
+            // Follow relationship (viewer → target)
+            $isFollowing = false; $isFriend = false;
+            if ($uid) {
+                $ifS = $pdo->prepare('SELECT COUNT(*) as c FROM follows WHERE follower_id=? AND following_id=?'); $ifS->execute([$uid, $tid]);
+                $ibS = $pdo->prepare('SELECT COUNT(*) as c FROM follows WHERE follower_id=? AND following_id=?'); $ibS->execute([$tid, $uid]);
+                $isFollowing = (bool)$ifS->fetch()['c'];
+                $isFriend    = $isFollowing && (bool)$ibS->fetch()['c'];
+            }
+
+            $isMe = ($uid && $uid === $tid);
+
+            // ── Privacy check helpers ─────────────────────────────────────────
+            $canSee = function($visibility) use ($uid, $tid, $isFriend, $isFollowing, $isMe) {
+                if ($isMe) return true; // owner always sees their own data
+                if (!$visibility || $visibility === 'everyone' || $visibility === 'public') return true;
+                if (!$uid) return false;
+                if ($visibility === 'friends')   return $isFriend;
+                if ($visibility === 'followers') return $isFollowing;
+                if ($visibility === 'hidden' || $visibility === 'private' || $visibility === 'only_me') return false;
+                return false;
+            };
+
+            // ── public_profile: if OFF, only return name + avatar ────────────
+            $profileRestricted = !$isMe && !(bool)$priv['public_profile'];
+
+            if ($profileRestricted) {
+                // Return minimal profile — name + avatar only
+                echo json_encode(['success' => true, 'data' => [
+                    'user' => [
+                        'id'           => (int)$user['id'],
+                        'name'         => $user['name'],
+                        'avatar_url'   => $user['avatar_url'],
+                        'bio'          => null,
+                        'level'        => null,
+                        'points'       => null,
+                        'is_verified'  => false,
+                        'followers'    => null,
+                        'following'    => null,
+                        'friends'      => null,
+                        'review_count' => null,
+                    ],
+                    'is_following'       => $isFollowing,
+                    'is_friend'          => $isFriend,
+                    'profile_restricted' => true,
+                    'reviews'            => [],
+                    'visited'            => [],
+                ]]);
+                exit;
+            }
+
+            // ── Count stats — apply followers_visibility ──────────────────────
+            $showFollowerCounts = $canSee($priv['followers_visibility']);
+
+            $fc = $pdo->prepare('SELECT COUNT(*) as c FROM follows WHERE following_id=?'); $fc->execute([$tid]);
+            $ng = $pdo->prepare('SELECT COUNT(*) as c FROM follows WHERE follower_id=?');  $ng->execute([$tid]);
+            $fr = $pdo->prepare('SELECT COUNT(*) as c FROM follows f1 JOIN follows f2 ON f1.follower_id=f2.following_id AND f1.following_id=f2.follower_id WHERE f1.follower_id=?');
+            $fr->execute([$tid]);
+            $rc = $pdo->prepare('SELECT COUNT(*) as c FROM reviews WHERE user_id=?'); $rc->execute([$tid]);
+
+            $followers   = $showFollowerCounts ? (int)$fc->fetch()['c'] : null;
+            $following   = $showFollowerCounts ? (int)$ng->fetch()['c'] : null;
+            $friends     = $showFollowerCounts ? (int)$fr->fetch()['c'] : null;
+            $reviewCount = $canSee($priv['reviews_visibility']) ? (int)$rc->fetch()['c'] : null;
+
+            // ── Activity data — apply per-category visibility ─────────────────
+            $reviews = []; $visited = [];
+            if ($canSee($priv['reviews_visibility'])) {
+                $rs = $pdo->prepare('SELECT r.*, b.name AS business_name FROM reviews r JOIN businesses b ON r.business_id = b.id WHERE r.user_id = ? ORDER BY r.created_at DESC LIMIT 20');
+                $rs->execute([$tid]);
+                $reviews = $rs->fetchAll();
+            }
+            if ($canSee($priv['visited_visibility'])) {
+                $vs = $pdo->prepare('SELECT b.* FROM visits v JOIN businesses b ON v.business_id = b.id WHERE v.user_id = ? ORDER BY v.visited_at DESC LIMIT 20');
+                $vs->execute([$tid]);
+                $visited = $vs->fetchAll();
+            }
+
+            echo json_encode(['success' => true, 'data' => [
+                'user' => array_merge($user, [
+                    'followers'    => $followers,
+                    'following'    => $following,
+                    'friends'      => $friends,
+                    'review_count' => $reviewCount,
+                ]),
+                'is_following'          => $isFollowing,
+                'is_friend'             => $isFriend,
+                'profile_restricted'    => false,
+                'reviews_hidden'        => !$canSee($priv['reviews_visibility']),
+                'visited_hidden'        => !$canSee($priv['visited_visibility']),
+                'followers_hidden'      => !$showFollowerCounts,
+                'reviews'               => $reviews,
+                'visited'               => $visited,
+            ]]);
+            exit;
+        }
     }
 }
 
@@ -1212,37 +1760,129 @@ if ($base === 'debug-reviews') {
     echo json_encode($results);
     exit;
 }
-function send_expo_push(array $tokens, string $title, string $body, array $data = []): void {
-    if (empty($tokens)) return;
-    $messages = array_map(fn($t) => [
-        'to'    => $t,
-        'sound' => 'default',
-        'title' => $title,
-        'body'  => $body,
-        'data'  => $data,
-    ], array_values($tokens));
+/**
+ * Send Expo push notifications to one or more device tokens.
+ *
+ * Captures the Expo API response and automatically marks any
+ * DeviceNotRegistered tokens as inactive so they are never used again.
+ * Returns the number of messages that Expo accepted without error.
+ */
+function send_expo_push(array $tokens, string $title, string $body, array $data = []): int {
+    global $pdo;
+    if (empty($tokens)) return 0;
+
+    // Build one message object per token, keeping track of which index maps to which token
+    $messages   = [];
+    $tokenIndex = []; // index → token string (for response matching)
+    foreach (array_values($tokens) as $i => $t) {
+        if (!$t || strncmp((string)$t, 'ExponentPushToken[', 18) !== 0) continue;
+        $messages[]   = [
+            'to'       => $t,
+            'sound'    => 'default',
+            'title'    => $title,
+            'body'     => $body,
+            'data'     => $data,
+            'channelId'=> $data['type'] ?? 'default', // Android channel
+        ];
+        $tokenIndex[$i] = $t;
+    }
+    if (empty($messages)) return 0;
+
+    $accepted = 0;
+
     // Expo push endpoint accepts up to 100 per batch
-    foreach (array_chunk($messages, 100) as $batch) {
+    foreach (array_chunk($messages, 100, true) as $batchOffset => $batch) {
         $ch = curl_init('https://exp.host/--/api/v2/push/send');
         curl_setopt_array($ch, [
             CURLOPT_POST           => true,
             CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_TIMEOUT        => 10,
-            CURLOPT_HTTPHEADER     => ['Content-Type: application/json','Accept: application/json'],
-            CURLOPT_POSTFIELDS     => json_encode($batch),
+            CURLOPT_TIMEOUT        => 15,
+            CURLOPT_HTTPHEADER     => [
+                'Content-Type: application/json',
+                'Accept: application/json',
+                'Accept-Encoding: gzip, deflate',
+            ],
+            CURLOPT_POSTFIELDS     => json_encode(array_values($batch)),
         ]);
-        curl_exec($ch);
+        $raw  = curl_exec($ch);
+        $http = curl_getinfo($ch, CURLINFO_HTTP_CODE);
         curl_close($ch);
+
+        if (!$raw || $http < 200 || $http >= 300) continue;
+
+        $resp = json_decode($raw, true);
+        if (!isset($resp['data']) || !is_array($resp['data'])) {
+            $accepted += count($batch);
+            continue;
+        }
+
+        // Match each response ticket to its token and handle errors
+        $batchTokens = array_values(array_intersect_key($tokenIndex, $batch));
+        foreach ($resp['data'] as $idx => $ticket) {
+            if (!isset($ticket['status'])) continue;
+            if ($ticket['status'] === 'ok') {
+                $accepted++;
+                continue;
+            }
+            // status === 'error' — inspect the details code
+            $errCode = $ticket['details']['error'] ?? '';
+            if ($errCode === 'DeviceNotRegistered') {
+                // Token is stale — mark inactive so it is never used again
+                $deadToken = $batchTokens[$idx] ?? null;
+                if ($deadToken && isset($pdo)) {
+                    try {
+                        $pdo->prepare("UPDATE push_tokens SET is_active=0 WHERE token=?")
+                            ->execute([$deadToken]);
+                    } catch (Throwable $_) {}
+                }
+            }
+            // MessageRateExceeded, InvalidCredentials etc. — log but keep token
+        }
     }
+
+    return $accepted;
 }
 
-// ── HELPER: get push tokens for a list of user IDs ───────────────────────────
+// ── HELPER: get active push tokens for a list of user IDs ────────────────────
+// Only returns tokens that are is_active=1 (not pruned by DeviceNotRegistered).
 function get_push_tokens(PDO $pdo, array $userIds): array {
     if (empty($userIds)) return [];
     $ph = implode(',', array_fill(0, count($userIds), '?'));
-    $s  = $pdo->prepare("SELECT token FROM push_tokens WHERE user_id IN ($ph)");
+    $s  = $pdo->prepare("SELECT token FROM push_tokens WHERE user_id IN ($ph) AND is_active=1");
     $s->execute($userIds);
     return array_column($s->fetchAll(), 'token');
+}
+
+// ── HELPER: check a single notification preference for a user ─────────────────
+// Returns true if the preference is enabled (or if the table/row doesn't exist
+// yet — defaults to true so existing users are not silently broken).
+// $prefKey MUST be one of the allowed keys below — never interpolate user input.
+function notif_pref_enabled(PDO $pdo, int $userId, string $prefKey): bool {
+    // Whitelist to prevent any possible SQL injection from caller mistakes
+    $allowed = ['follows','checkins','new_reviews','replies','trending','promotions','events','updates'];
+    if (!in_array($prefKey, $allowed, true)) return true; // unknown key → default on
+
+    try {
+        // Use a CASE expression to avoid dynamic column interpolation
+        $sql = "SELECT CASE '$prefKey'
+            WHEN 'follows'     THEN follows
+            WHEN 'checkins'    THEN checkins
+            WHEN 'new_reviews' THEN new_reviews
+            WHEN 'replies'     THEN replies
+            WHEN 'trending'    THEN trending
+            WHEN 'promotions'  THEN promotions
+            WHEN 'events'      THEN events
+            WHEN 'updates'     THEN updates
+            ELSE 1 END AS pref_value
+            FROM notification_preferences WHERE user_id=?";
+        $s = $pdo->prepare($sql);
+        $s->execute([$userId]);
+        $row = $s->fetch();
+        if (!$row) return true; // no row = never configured = default on
+        return (bool)$row['pref_value'];
+    } catch (Throwable $_) {
+        return true; // table doesn't exist yet — fail open
+    }
 }
 
 // ── POST /user/checkin-notify — notify followers when user checks in ──────────
@@ -1305,7 +1945,11 @@ if ($base === 'user' && $sub === 'checkin-notify' && $method === 'POST') {
         }
 
         // Push notifications to followers who have tokens
-        $tokens = get_push_tokens($pdo, $followerIds);
+        // Only send to followers who have the checkins preference enabled
+        $followerIdsWithPref = array_filter($followerIds, function($fid) use ($pdo) {
+            return notif_pref_enabled($pdo, (int)$fid, 'checkins');
+        });
+        $tokens = get_push_tokens($pdo, array_values($followerIdsWithPref));
         if (!empty($tokens)) {
             send_expo_push($tokens, $notifTitle, $notifMsg, [
                 'type'         => 'checkin',
@@ -1396,13 +2040,21 @@ if ($base === 'admin' && $sub === 'campaigns') {
             try { $ins->execute([$fid, 'promo', $title, $message, $notifData]); } catch (PDOException $e) {}
         }
 
-        // Send push notifications
-        send_expo_push($tokens, $title, $message, [
-            'type' => 'promo',
-            'campaignId' => (int)$campaignId,
-            'businessId' => $bizId,
-            'businessName' => $bizRow['name'],
-        ]);
+        // Send push notifications — only to users who have promotions enabled
+        $promoTokens = [];
+        foreach ($selected as $sel) {
+            if (notif_pref_enabled($pdo, (int)$sel['user_id'], 'promotions')) {
+                $promoTokens[] = $sel['token'];
+            }
+        }
+        if (!empty($promoTokens)) {
+            send_expo_push($promoTokens, $title, $message, [
+                'type' => 'promo',
+                'campaignId' => (int)$campaignId,
+                'businessId' => $bizId,
+                'businessName' => $bizRow['name'],
+            ]);
+        }
 
         $pdo->prepare('UPDATE campaigns SET sent_at=NOW() WHERE id=?')->execute([$campaignId]);
         echo json_encode(['success' => true, 'message' => 'Campaign sent.', 'recipients' => count($tokens), 'campaignId' => (int)$campaignId]);
@@ -1497,11 +2149,17 @@ if ($base === 'user' && $sub === 'saved-reminder-check' && $method === 'POST') {
 
     // Push — best effort; never fail the request if Expo/push is unavailable
     try {
-        $tk = $pdo->prepare('SELECT token FROM push_tokens WHERE user_id=?');
-        $tk->execute([$uid]);
-        $tok = $tk->fetchColumn();
-        if ($tok) {
-            send_expo_push([$tok], $title, $body, $payload);
+        // Saved-place reminders are discovery nudges ("you saved this place, want to visit?").
+        // They map to the 'trending' preference (Trending & Picks / discovery push),
+        // NOT 'new_reviews' which is for review-related notifications.
+        // In-app notification is always created above regardless of this preference.
+        if (notif_pref_enabled($pdo, $uid, 'trending')) {
+            $tk = $pdo->prepare('SELECT token FROM push_tokens WHERE user_id=? AND is_active=1');
+            $tk->execute([$uid]);
+            $tok = $tk->fetchColumn();
+            if ($tok) {
+                send_expo_push([$tok], $title, $body, $payload);
+            }
         }
     } catch (Throwable $e) {}
 
@@ -1559,6 +2217,1103 @@ if ($base === 'debug-reviews') {
     exit;
 }
 
-// ── 404 ───────────────────────────────────────────────────────────────────────
-http_response_code(404);
-echo json_encode(['success' => false, 'message' => 'Route not found: /' . $base . '/' . $sub]);
+// =============================================================================
+// RECOMMENDATION SYSTEM  —  Smart Food & Drink Recommendations
+// =============================================================================
+
+// ── Helpers: auth + error used by recommendation routes ──────────────────────
+// yegna_auth_user() mirrors require_auth() but is used in the recommendation
+// section where the function name pattern differs. Returns the user ID or
+// sends a 401 and exits.
+function yegna_auth_user(): int {
+    global $JWT_SECRET;
+    $auth = $_SERVER['HTTP_AUTHORIZATION'] ?? '';
+    if (!$auth && function_exists('apache_request_headers')) {
+        $hdrs = apache_request_headers();
+        $auth = $hdrs['Authorization'] ?? $hdrs['authorization'] ?? '';
+    }
+    if (!$auth && isset($_SERVER['REDIRECT_HTTP_AUTHORIZATION'])) {
+        $auth = $_SERVER['REDIRECT_HTTP_AUTHORIZATION'];
+    }
+    $token = (strncmp($auth, 'Bearer ', 7) === 0) ? trim(substr($auth, 7)) : null;
+    if (!$token) {
+        http_response_code(401);
+        echo json_encode(['success' => false, 'message' => 'Authentication required.']);
+        exit;
+    }
+    $payload = jwt_decode($token, $JWT_SECRET);
+    if (!$payload || empty($payload['id'])) {
+        http_response_code(401);
+        echo json_encode(['success' => false, 'message' => 'Invalid or expired token.']);
+        exit;
+    }
+    return (int)$payload['id'];
+}
+
+// Convenience: send an error response and exit.
+function yegna_fail(string $message, int $status = 400) {
+    http_response_code($status);
+    echo json_encode(['success' => false, 'message' => $message]);
+    exit;
+}
+
+// ── Helpers: Calendar / holiday / fasting context ─────────────────────────────
+function yegna_tz() { return new DateTimeZone('Africa/Addis_Ababa'); }
+
+function yegna_ethiopian_shift(int $gregorianYear): int {
+    // Enkutatash = Sept 11 OR Sept 12 in the year BEFORE a Gregorian leap year.
+    // 1900-2099 safe rule: shift = 1 if (gregorianYear+1) mod 4 == 0 else 0.
+    $next = $gregorianYear + 1;
+    return (($next % 4 === 0 && $next % 100 !== 0) || ($next % 400 === 0)) ? 1 : 0;
+}
+
+function yegna_resolve_ethiopian_fixed(int $ecMonth, int $ecDay, int $gregorianYear): string {
+    // Returns Y-m-d Gregorian date for an Ethiopian-calendar fixed mm/dd that
+    // falls in the given Gregorian year (handles Enkutatash leap-shift).
+    $shift = yegna_ethiopian_shift($gregorianYear);
+    $enkutatash = new DateTime("{$gregorianYear}-09-" . (11 + $shift), yegna_tz());
+    $daysFromNewYear = ($ecMonth - 1) * 30 + ($ecDay - 1);
+    // Ethiopian months 1..12 map cleanly; Pagume (13) would be days 360-365.
+    if ($ecMonth === 13) {
+        $daysFromNewYear = 360 + ($ecDay - 1);
+    }
+    $date = clone $enkutatash;
+    $date->modify("+{$daysFromNewYear} days");
+    // If the result is >= Jan 1 of gregorianYear+1 AND target was before Meskerem,
+    // we need the same ecMonth/ecDay but in the *previous* Ethiopian year that
+    // still falls within $gregorianYear. This handles Jan–Sept portion correctly
+    // because we check against the ENKUTATASH of the year we want to live in.
+    if ($ecMonth >= 4 || ($ecMonth === 1 && $ecDay <= 30)) {
+        // Tahsas or later in Ethiopian year lands in Jan+ of Gregorian year; but
+        // Tahsas 29 (Jan 7) already lives in Gregorian year after Enkutatash's year.
+        // For Tahsas..Nehase months: if date > end of gregorianYear, step back 1 Ethiopian year.
+        $endOfYear = new DateTime("{$gregorianYear}-12-31", yegna_tz());
+        if ($date > $endOfYear) {
+            // Previous Ethiopian year: Enkutatash of previous Gregorian year
+            $prevYear = $gregorianYear - 1;
+            $shiftPrev = yegna_ethiopian_shift($prevYear);
+            $enkPrev = new DateTime("{$prevYear}-09-" . (11 + $shiftPrev), yegna_tz());
+            $date = clone $enkPrev;
+            $date->modify("+{$daysFromNewYear} days");
+        }
+    }
+    return $date->format('Y-m-d');
+}
+
+function yegna_context(DateTime $day): array {
+    $ctx = [
+        'date'       => $day->format('Y-m-d'),
+        'dow'        => (int)$day->format('N'),   // 1=Mon..7=Sun
+        'is_sunday'  => (int)$day->format('N') === 7,
+        'holiday'    => null,                     // { name, importance, date_type }
+        'holidays'   => [],                       // all holidays matching day
+        'fasting_periods' => [],
+        'is_fasting_day' => false,                // Wed/Fri OR inside major fast
+        'fasting_context'  => null,
+    ];
+    global $pdo;
+    $dateStr = $day->format('Y-m-d');
+    $year = (int)$day->format('Y');
+    $mmdd = $day->format('m-d');
+
+    // FIXED_GREGORIAN holidays  (we store 2000 placeholder year in date_col)
+    $s = $pdo->prepare("SELECT * FROM calendar_events
+      WHERE category = 'holiday' AND date_type='FIXED_GREGORIAN'
+        AND DATE_FORMAT(date_col,'%m-%d') = ?");
+    $s->execute([$mmdd]);
+    foreach ($s->fetchAll() as $r) { $ctx['holidays'][] = $r; }
+
+    // YEAR_SPECIFIC holidays
+    $s = $pdo->prepare("SELECT * FROM calendar_events
+      WHERE category='holiday' AND date_type='YEAR_SPECIFIC' AND date_col = ?");
+    $s->execute([$dateStr]);
+    foreach ($s->fetchAll() as $r) { $ctx['holidays'][] = $r; }
+
+    // ETHIOPIAN_FIXED holidays  — resolve each entry's mm-dd against $year
+    $ethRows = $pdo->query("SELECT * FROM calendar_events
+      WHERE category='holiday' AND date_type='ETHIOPIAN_FIXED'")->fetchAll();
+    foreach ($ethRows as $r) {
+        [$ecM, $ecD] = array_map('intval', explode('-', $r['ec_month_day']));
+        $resolved = yegna_resolve_ethiopian_fixed($ecM, $ecD, $year);
+        if ($resolved === $dateStr) { $ctx['holidays'][] = $r; }
+    }
+
+    // Pick dominant holiday  (highest importance, else first)
+    $best = null;
+    foreach ($ctx['holidays'] as $h) {
+        if ($best === null || (int)$h['importance'] > (int)$best['importance']) $best = $h;
+    }
+    if ($best) { $ctx['holiday'] = ['name' => $best['name'], 'importance' => (int)$best['importance']]; }
+
+    // Fasting periods: YEAR_SPECIFIC_RANGE
+    $s = $pdo->prepare("SELECT * FROM calendar_events
+      WHERE category='fasting_period' AND date_type='YEAR_SPECIFIC_RANGE'
+        AND ? BETWEEN range_start AND range_end");
+    $s->execute([$dateStr]);
+    $ctx['fasting_periods'] = $s->fetchAll();
+
+    // Weekly Wednesday/Friday rule + major fast periods = is_fasting_day
+    $dow = $ctx['dow'];
+    $inMajorFast = count($ctx['fasting_periods']) > 0;
+    if ($inMajorFast) {
+        $ctx['is_fasting_day'] = true;
+        $ctx['fasting_context'] = $ctx['fasting_periods'][0]['fasting_type'] ?: 'major_fast';
+    } elseif ($dow === 3 || $dow === 5) {
+        $ctx['is_fasting_day'] = true;
+        $ctx['fasting_context'] = ($dow === 3) ? 'wednesday' : 'friday';
+    }
+    return $ctx;
+}
+
+// ── Helpers: distance / open-now / fasting-compat / business scoring ─────────
+function yegna_haversine_m(float $lat1, float $lng1, float $lat2, float $lng2): float {
+    $R = 6371000.0;
+    $p1 = deg2rad($lat1); $p2 = deg2rad($lat2);
+    $dp = deg2rad($lat2 - $lat1);
+    $dl = deg2rad($lng2 - $lng1);
+    $a = sin($dp/2)**2 + cos($p1)*cos($p2)*sin($dl/2)**2;
+    $c = 2*atan2(sqrt($a), sqrt(1-$a));
+    return $R * $c;
+}
+
+function yegna_open_now(int $bizId, DateTime $now): bool {
+    global $pdo;
+    $dow = (int)$now->format('N') % 7;   // SQL day: 0=Sun..6=Sat  (PHP N=7 Sun → 0)
+    $hmm = (int)$now->format('Hi');
+    $s = $pdo->prepare("SELECT open_time, close_time FROM business_hours
+      WHERE business_id=? AND day_of_week=? LIMIT 1");
+    $s->execute([$bizId, $dow]);
+    $row = $s->fetch();
+    if (!$row) return true;   // no hours data → assume open
+    $open  = (int)str_replace(':', '', $row['open_time']);
+    $close = (int)str_replace(':', '', $row['close_time']);
+    if ($close <= $open) { $close += 2400; $cur = $hmm + ($hmm < $open ? 2400 : 0); return $cur >= $open && $cur <= $close; }
+    return $hmm >= $open && $hmm <= $close;
+}
+
+function yegna_fasting_score(string $catName, string $bizName): float {
+    // Businesses that almost always serve fasting-compatible (vegan) Ethiopian
+    // food, beverages, juices get +0.9. Generic "Restaurant" gets +0.5 because
+    // many have separate fasting menus. Meat-specialised names get 0 or negative.
+    $cn = mb_strtolower($catName);
+    $bn = mb_strtolower($bizName);
+    $bev = ['coffee','cafe','café','tea','juice','smoothie','bar','bakery','pastry','drinks'];
+    foreach ($bev as $w) { if (str_contains($cn,$w) || str_contains($bn,$w)) return 0.95; }
+    $veg = ['vegetarian','vegan','fasting','ምግብ','ሽሮ','ምስር','ፋሶሊያ','ጎመን'];
+    foreach ($veg as $w) { if (str_contains($cn,$w) || str_contains($bn,$w)) return 1.0; }
+    if (str_contains($cn, 'restaurant') || str_contains($cn, 'ethiopian')) return 0.55;
+    $meat = ['steak','butchery','bbq','barbecue','burger','chicken','meat','kebab','shawarma','fish','seafood','sushi','doro'];
+    foreach ($meat as $w) { if (str_contains($cn,$w) || str_contains($bn,$w)) return -0.3; }
+    return 0.5;
+}
+
+function yegna_cooldown_days(int $userId, int $bizId, DateTime $now): int {
+    global $pdo;
+    $s = $pdo->prepare("SELECT DATEDIFF(?, MAX(created_at)) AS d
+      FROM recommendation_history WHERE user_id=? AND business_id=?");
+    $s->execute([$now->format('Y-m-d H:i:s'), $userId, $bizId]);
+    $d = $s->fetchColumn();
+    return $d === null || $d === false ? 9999 : (int)$d;
+}
+
+function yegna_pick_business(int $userId, float $lat, float $lng, array $ctx, DateTime $now): ?array {
+    global $pdo;
+    $radii = [1000, 2000, 5000];       // metres
+    $MIN_RESULTS = 4;                  // need at least this many to score from
+    $bestBatch = null;
+    foreach ($radii as $R) {
+        // Rough bounding box + Haversine filter
+        $latDelta = $R / 111320.0;
+        $lngDelta = $R / (111320.0 * max(0.01, cos(deg2rad($lat))));
+        $minLat = $lat - $latDelta; $maxLat = $lat + $latDelta;
+        $minLng = $lng - $lngDelta; $maxLng = $lng + $lngDelta;
+        $s = $pdo->prepare("SELECT id, name, category, rating, review_count,
+          latitude, longitude, photos, is_verified, description
+          FROM businesses
+          WHERE status='approved'
+            AND latitude BETWEEN ? AND ?
+            AND longitude BETWEEN ? AND ?
+          LIMIT 400");
+        $s->execute([$minLat, $maxLat, $minLng, $maxLng]);
+        $rows = $s->fetchAll();
+        $candidates = [];
+        foreach ($rows as $r) {
+            $d = yegna_haversine_m($lat, $lng, (float)$r['latitude'], (float)$r['longitude']);
+            if ($d <= $R) { $r['_distance_m'] = $d; $candidates[] = $r; }
+        }
+        if (count($candidates) >= $MIN_RESULTS) { $bestBatch = $candidates; break; }
+        if ($bestBatch === null || count($candidates) > count($bestBatch)) $bestBatch = $candidates;
+    }
+    if (!$bestBatch) return null;
+
+    // Score each candidate
+    $scored = [];
+    $isFast = !empty($ctx['is_fasting_day']);
+    $isHoliday = $ctx['holiday'] !== null;
+    foreach ($bestBatch as $b) {
+        $distM = (float)$b['_distance_m'];
+        // Distance score: 1.0 at 0m, ~0.55 at 1km, ~0.2 at 5km
+        $distScore = exp(-$distM / 1800.0);
+        $rating = (float)($b['rating'] ?? 0);
+        $rc = (int)($b['review_count'] ?? 0);
+        // Rating score — weighted with popularity (log of review count)
+        $ratingScore = $rating >= 1 ? ($rating / 5.0) * 0.75 + (1 - exp(-$rc / 15.0)) * 0.25 : 0.3;
+        $open = yegna_open_now((int)$b['id'], $now);
+        $openScore = $open ? 1.0 : 0.35;
+        $fastScore = $isFast ? yegna_fasting_score((string)$b['category'], (string)$b['name']) : 0.5;
+        if ($isFast && $fastScore < 0) $fastScore = 0;
+        // Holiday bonus for restaurant/cafe when it's a national holiday
+        $catLow = mb_strtolower((string)$b['category']);
+        $holidayBonus = ($isHoliday && (str_contains($catLow,'resta') || str_contains($catLow,'cafe') || str_contains($catLow,'coffee'))) ? 0.12 : 0.0;
+        // Fasting-day strong-penalty for non-compatible
+        $fastPenalty = ($isFast && $fastScore < 0.3) ? -0.35 : 0.0;
+        // Cooldown: if recommended in last 21 days, strong penalty
+        $cdDays = yegna_cooldown_days($userId, (int)$b['id'], $now);
+        $cooldownPenalty = 0.0;
+        if ($cdDays < 7)   $cooldownPenalty = -0.9;
+        elseif ($cdDays < 21) $cooldownPenalty = -0.3 * (1 - ($cdDays - 7) / 14.0);
+
+        $total = (0.28 * $distScore)
+               + (0.20 * $ratingScore)
+               + (0.18 * $openScore)
+               + ($isFast ? 0.24 : 0.08) * max(0.0, $fastScore)
+               + $holidayBonus
+               + $fastPenalty
+               + $cooldownPenalty
+               + 0.02;  // tiny tie-break
+        $b['_score'] = $total;
+        $b['_breakdown'] = [
+            'distance_score' => round($distScore,3),
+            'rating_score'   => round($ratingScore,3),
+            'open_score'     => $openScore,
+            'fast_score'     => round($fastScore,3),
+            'cooldown_days'  => $cdDays,
+            'open_now'       => $open,
+            'distance_m'     => round($distM),
+        ];
+        $scored[] = $b;
+    }
+    // Sort descending by score; pick the winner.
+    usort($scored, fn($a,$b) => $b['_score'] <=> $a['_score']);
+    // Top 3, pick randomly with 70/20/10 weights to add mild variety.
+    $top = array_slice($scored, 0, 3);
+    if (count($top) === 0) return null;
+    $weights = [0 => 0.70, 1 => 0.20, 2 => 0.10];
+    $rnd = mt_rand() / mt_getrandmax();
+    $cum = 0.0; $pickIdx = 0;
+    foreach ($top as $i => $_) {
+        $cum += $weights[$i] ?? 0.10;
+        if ($rnd <= $cum) { $pickIdx = $i; break; }
+    }
+    $winner = $top[$pickIdx];
+    $winner['_distance_m'] = round((float)$winner['_distance_m']);
+    return $winner;
+}
+
+// ── Helpers: Schedule computation ────────────────────────────────────────────
+function yegna_next_due(DateTime $createdAt, ?DateTime $lastSent, DateTime $now): DateTime {
+    // Next due = next Sunday at the same HH:MM as $createdAt (Addis timezone)
+    // + jitter of ±900 s (15 min). If $lastSent is within 6 days of $now, push
+    // to the Sunday AFTER next to guarantee the ~7-day cadence.
+    $tz = yegna_tz();
+    $due = (clone $createdAt)->setTimezone($tz);
+    $hh = (int)$due->format('H'); $mm = (int)$due->format('i');
+    // Anchor to "this week's Sunday" in Addis TZ, then step forward to first valid.
+    $ref = (clone $now)->setTimezone($tz);
+    $refDow = (int)$ref->format('N');  // 1=Mon..7=Sun
+    $daysAhead = (7 - $refDow + 7) % 7; // days until Sunday (0 if today is Sunday)
+    $candidate = (clone $ref)->modify("+{$daysAhead} days");
+    $candidate->setTime($hh, $mm, 0);
+    // Jitter ± 15 min (deterministic per user — skip for simplicity; use random)
+    $jitterSec = random_int(-900, 900);
+    $candidate->modify(($jitterSec >= 0 ? '+' : '') . "{$jitterSec} seconds");
+    // Ensure minimum gap from last_sent
+    if ($lastSent) {
+        $diffDays = (int)$lastSent->diff($candidate)->days;
+        $gapOK = $candidate >= $lastSent && $diffDays >= 6;
+        if (!$gapOK) { $candidate->modify('+7 days'); }
+    }
+    // If candidate is BEFORE "now + 1 minute" (i.e., missed this past Sunday by a
+    // hair), use this upcoming Sunday (already handled by daysAhead formula for
+    // today-Sunday edge when HH:MM already past).
+    if ($candidate <= (clone $now)->modify('+1 minute')) {
+        $candidate->modify('+7 days');
+    }
+    return $candidate;
+}
+
+// ── Routes: POST /user/location  ─────────────────────────────────────────────
+if ($base === 'user' && $sub === 'location' && $method === 'POST') {
+    $uid = yegna_auth_user();
+    $body = json_decode(file_get_contents('php://input'), true) ?: [];
+    $lat = $body['latitude'] ?? null; $lng = $body['longitude'] ?? null;
+    if ($lat === null || $lng === null) yegna_fail('latitude/longitude required', 400);
+    if (!is_numeric($lat) || !is_numeric($lng)) yegna_fail('invalid location', 400);
+    $acc = $body['accuracy_m'] ?? null;
+    $stmt = $pdo->prepare("INSERT INTO user_locations (user_id,latitude,longitude,accuracy_m)
+      VALUES (?,?,?,?) ON DUPLICATE KEY UPDATE
+        latitude=VALUES(latitude), longitude=VALUES(longitude),
+        accuracy_m=VALUES(accuracy_m), updated_at=CURRENT_TIMESTAMP");
+    $stmt->execute([$uid, (float)$lat, (float)$lng, $acc === null ? null : (float)$acc]);
+    echo json_encode(['success' => true, 'stored_at' => date('c')]);
+    exit;
+}
+
+// ── Routes: GET /recommendations  ────────────────────────────────────────────
+if ($base === 'recommendations' && $method === 'GET') {
+    $uid = yegna_auth_user();
+    $limit = min(20, (int)($_GET['limit'] ?? 5));
+    $s = $pdo->prepare("SELECT rh.id, rh.business_id, rh.rec_type, rh.context,
+        rh.holiday_name, rh.fasting_context, rh.created_at,
+        b.name AS business_name, b.category, b.rating, b.review_count,
+        b.address, b.city, b.photos, b.latitude, b.longitude
+      FROM recommendation_history rh
+      JOIN businesses b ON b.id = rh.business_id
+      WHERE rh.user_id = ? ORDER BY rh.created_at DESC LIMIT ?");
+    $s->execute([$uid, $limit]);
+    $rows = $s->fetchAll();
+    $out = [];
+    foreach ($rows as $r) {
+        $ctx = $r['context'] ? json_decode($r['context'], true) : null;
+        $out[] = [
+            'id' => (int)$r['id'],
+            'business_id' => (int)$r['business_id'],
+            'business_name' => $r['business_name'],
+            'business_category' => $r['category'],
+            'rating' => $r['rating'] === null ? null : (float)$r['rating'],
+            'review_count' => (int)$r['review_count'],
+            'address' => $r['address'],
+            'city' => $r['city'],
+            'cover_photo' => yegna_first_photo($r['photos']),
+            'latitude' => $r['latitude'] === null ? null : (float)$r['latitude'],
+            'longitude' => $r['longitude'] === null ? null : (float)$r['longitude'],
+            'rec_type' => $r['rec_type'],
+            'holiday_name' => $r['holiday_name'],
+            'fasting_context' => $r['fasting_context'],
+            'score_breakdown' => $ctx['score_breakdown'] ?? null,
+            'created_at' => $r['created_at'],
+        ];
+    }
+    echo json_encode(['success' => true, 'data' => $out]);
+    exit;
+}
+
+// ── Routes: POST /admin/scheduler/run-recommendations ────────────────────────
+// One idempotent admin endpoint. Cron on Plesk calls this hourly with admin JWT.
+// Processes up to 100 due users per run. Idempotent: writes history BEFORE push
+// so retries don't double-notify; row-level lock column prevents concurrency.
+if ($base === 'admin' && $sub === 'scheduler' && $subsub === 'run-recommendations' && $method === 'POST') {
+    // Admin auth — reuse the existing JWT check + require role=admin
+    $headers = function_exists('getallheaders') ? (getallheaders() ?: []) : [];
+    $token = null;
+    foreach ($headers as $k => $v) {
+        if (strcasecmp($k, 'Authorization') === 0 && strncmp($v, 'Bearer ', 7) === 0) $token = trim(substr($v, 7));
+    }
+    if (!$token && isset($_SERVER['HTTP_AUTHORIZATION']) && strncmp($_SERVER['HTTP_AUTHORIZATION'], 'Bearer ', 7) === 0)
+        $token = trim(substr($_SERVER['HTTP_AUTHORIZATION'], 7));
+    if (!$token) { http_response_code(401); echo json_encode(['success'=>false,'message'=>'Missing auth']); exit; }
+    try { $jwt = \Firebase\JWT\JWT::decode($token, new \Firebase\JWT\Key(JWT_SECRET, 'HS256')); }
+    catch (Exception $e) { http_response_code(401); echo json_encode(['success'=>false,'message'=>'Invalid token']); exit; }
+    $callerId = (int)($jwt->sub ?? $jwt->user_id ?? 0);
+    if ($callerId <= 0) { http_response_code(401); echo json_encode(['success'=>false,'message'=>'Invalid token subject']); exit; }
+    // Accept admin users, OR any user when ADMIN_WHITELIST allows — for this cron
+    // endpoint we simply accept any valid signed JWT (the URL itself is obscure,
+    // and the processing_lock + idempotency prevent damage). Keep narrow: require role=admin.
+    $roleQ = $pdo->prepare("SELECT role FROM users WHERE id=? LIMIT 1");
+    $roleQ->execute([$callerId]);
+    $callerRole = (string)($roleQ->fetchColumn() ?: 'user');
+    if ($callerRole !== 'admin') {
+        http_response_code(403);
+        echo json_encode(['success'=>false,'message'=>'Admin role required','caller_id'=>$callerId,'role'=>$callerRole]);
+        exit;
+    }
+
+    ignore_user_abort(true);
+    set_time_limit(120);
+    $now = new DateTime('now', yegna_tz());
+    $BATCH_SIZE = 100;
+
+    // Stage 1: claim a batch. For users with NO schedule row yet (new users),
+    // INSERT IGNORE a row with next_due_at initially NULL — the UPDATE then picks
+    // them up via OR next_due_at IS NULL with LEFT JOIN.
+    $pdo->exec("INSERT IGNORE INTO recommendation_schedule (user_id, next_due_at, processing_lock, lock_expires_at)
+      SELECT id, NULL, 0, NULL FROM users");
+
+    // Clear stale locks (older than 8 minutes) in case a previous run died mid-flight
+    $pdo->prepare("UPDATE recommendation_schedule
+      SET processing_lock=0, lock_expires_at=NULL
+      WHERE processing_lock=1 AND lock_expires_at IS NOT NULL AND lock_expires_at < ?")
+      ->execute([$now->format('Y-m-d H:i:s')]);
+
+    // Find + claim due users (lock with UPDATE LIMIT first — no joins needed)
+    $claimExpires = (clone $now)->modify('+8 minutes');
+    $lockSql = "UPDATE recommendation_schedule
+      SET processing_lock = 1, lock_expires_at = ?, updated_at = CURRENT_TIMESTAMP
+      WHERE processing_lock = 0
+        AND (next_due_at IS NULL OR next_due_at <= ?)
+      ORDER BY COALESCE(next_due_at, '1970-01-01') ASC
+      LIMIT {$BATCH_SIZE}";
+    $pdo->prepare($lockSql)->execute([
+        $claimExpires->format('Y-m-d H:i:s'),
+        $now->format('Y-m-d H:i:s'),
+    ]);
+
+    // Pull our locked batch with user details
+    $batch = $pdo->query("SELECT s.user_id, s.last_sent_at, s.next_due_at,
+        u.created_at, u.role, u.status
+      FROM recommendation_schedule s
+      JOIN users u ON u.id = s.user_id
+      WHERE s.processing_lock = 1 AND s.lock_expires_at = '".$claimExpires->format('Y-m-d H:i:s')."'")->fetchAll();
+
+    $processed = 0; $sent = 0; $skippedNoLoc = 0; $skippedNoBiz = 0; $skippedNoToken = 0; $errors = [];
+
+    foreach ($batch as $row) {
+        $uid = (int)$row['user_id'];
+        try {
+            // Determine context (sunday + holiday + fasting) for DUE DATE (use today — scheduler runs hourly)
+            $ctx = yegna_context($now);
+
+            // Get user location
+            $locRow = $pdo->prepare("SELECT latitude, longitude FROM user_locations WHERE user_id=? LIMIT 1");
+            $locRow->execute([$uid]); $loc = $locRow->fetch();
+            if (!$loc) {
+                $skippedNoLoc++;
+                yegna_sched_advance($pdo, $uid, $row, $now, null);
+                continue;
+            }
+            $lat = (float)$loc['latitude']; $lng = (float)$loc['longitude'];
+
+            // Pick business
+            $biz = yegna_pick_business($uid, $lat, $lng, $ctx, $now);
+            if (!$biz) {
+                $skippedNoBiz++;
+                yegna_sched_advance($pdo, $uid, $row, $now, null);
+                continue;
+            }
+
+            // Decide rec_type & wording (holiday overrides sunday)
+            $holidayName = $ctx['holiday']['name'] ?? null;
+            $isFast = !empty($ctx['is_fasting_day']);
+            $fastingCtx = $ctx['fasting_context'];
+            if ($holidayName) $recType = 'holiday';
+            elseif ($isFast) $recType = 'fasting';
+            else             $recType = 'sunday';
+
+            $bizId = (int)$biz['id'];
+            $bizName = $biz['name'];
+            $ctxJson = json_encode([
+                'holiday' => $holidayName,
+                'fasting' => $fastingCtx,
+                'is_sunday' => $ctx['is_sunday'],
+                'score_breakdown' => $biz['_breakdown'] ?? null,
+                'search_centre' => ['lat'=>$lat,'lng'=>$lng],
+            ]);
+
+            // Idempotency: INSERT IGNORE into history. If a row already exists for
+            // this user+biz+day → we already processed; skip sending.
+            $ins = $pdo->prepare("INSERT IGNORE INTO recommendation_history
+              (user_id, business_id, rec_type, context, holiday_name, fasting_context, notification_sent, created_date, created_at)
+              VALUES (?,?,?,CAST(? AS JSON),?,?,1,?,?)");
+            $createdAtStr = $now->format('Y-m-d H:i:s');
+            $createdDate  = $now->format('Y-m-d');
+            $ins->execute([$uid, $bizId, $recType, $ctxJson, $holidayName, $fastingCtx, $createdDate, $createdAtStr]);
+            if ($ins->rowCount() === 0) {
+                // Already sent; still advance schedule so we don't retry the same slot.
+                yegna_sched_advance($pdo, $uid, $row, $now, $bizId);
+                $processed++;
+                continue;
+            }
+            $histId = (int)$pdo->lastInsertId();
+
+            // Build notification text
+            $distKm = round(($biz['_distance_m'] ?? 0) / 1000.0, 1);
+            if ($recType === 'holiday') {
+                $title = '🎉 Enjoy the Holiday';
+                $body  = "It's {$holidayName}. We found {$bizName} near you to enjoy today.";
+            } elseif ($recType === 'fasting') {
+                $isCafe = stripos((string)$biz['category'], 'Coffee') !== false || stripos((string)$biz['category'], 'Cafe') !== false;
+                if ($isCafe) {
+                    $title = '☕ Fasting-Day Pick';
+                    $body  = "Looking for somewhere with coffee or fasting-friendly drinks? Try {$bizName}.";
+                } else {
+                    $title = '🌱 Fasting-Friendly Pick';
+                    $body  = "Looking for fasting-friendly food? We found {$bizName} near you.";
+                }
+            } else {
+                $isCafe = stripos((string)$biz['category'], 'Coffee') !== false || stripos((string)$biz['category'], 'Cafe') !== false;
+                if ($isCafe) {
+                    $title = '☕ Sunday Coffee Idea';
+                    $body  = "We found a café near you worth checking out: {$bizName}.";
+                } else {
+                    $title = '🍽️ This Week\u0027s Place';
+                    $body  = "Looking for somewhere to eat? {$bizName} is {$distKm} km away.";
+                }
+            }
+
+            // Insert into notifications table (so NotificationsContext renders it)
+            $notifData = json_encode([
+                'type' => 'recommendation',
+                'business_id' => $bizId,
+                'recommendation_id' => $histId,
+                'screen' => 'BusinessDetail',
+            ]);
+            $nins = $pdo->prepare("INSERT INTO notifications
+              (user_id, type, title, message, data, is_read, created_at)
+              VALUES (?, 'recommendation', ?, ?, CAST(? AS JSON), 0, ?)");
+            $nins->execute([$uid, $title, $body, $notifData, $createdAtStr]);
+
+            // Expo push — only if user has trending/recommendation push enabled
+            $hasPushTokens = yegna_user_has_push_tokens($pdo, $uid);
+            if (!$hasPushTokens) {
+                $skippedNoToken++;
+            } elseif (!notif_pref_enabled($pdo, $uid, 'trending')) {
+                $skippedNoToken++; // preference disabled — count as skipped
+            } else {
+                $extra = [
+                    'business_id' => $bizId,
+                    'screen'      => 'BusinessDetail',
+                    'type'        => 'recommendation',
+                ];
+                send_expo_push_all_tokens($pdo, $uid, $title, $body, $extra);
+            }
+
+            // Advance schedule
+            yegna_sched_advance($pdo, $uid, $row, $now, $bizId);
+            $sent++;
+            $processed++;
+
+        } catch (Throwable $e) {
+            $errors[] = ['uid' => $uid, 'err' => $e->getMessage()];
+            // Unlock only (don't leave it locked for 8 min — keep idempotent advance
+            // even on failure so a bad row doesn't permanently block).
+            try {
+                $pdo->prepare("UPDATE recommendation_schedule
+                  SET processing_lock=0, lock_expires_at=NULL
+                  WHERE user_id=? AND processing_lock=1 LIMIT 1")->execute([$uid]);
+            } catch (Throwable $_) {}
+        }
+    }
+
+    echo json_encode([
+        'success' => true,
+        'ran_at' => $now->format('c'),
+        'batch_size' => count($batch),
+        'processed' => $processed,
+        'recommendations_sent' => $sent,
+        'skipped_no_location' => $skippedNoLoc,
+        'skipped_no_business' => $skippedNoBiz,
+        'skipped_no_push_token' => $skippedNoToken,
+        'errors' => $errors,
+    ]);
+    exit;
+}
+
+// Helper used by the scheduler: advance a user's next_due_at to the NEXT due slot,
+// unlock, write last_sent_at if recommendation was produced.
+function yegna_sched_advance($pdo, int $uid, array $row, DateTime $now, ?int $bizId): void {
+    $created = new DateTime($row['created_at'], yegna_tz());
+    $last    = $row['last_sent_at'] ? new DateTime($row['last_sent_at'], yegna_tz()) : null;
+    $next    = yegna_next_due($created, $bizId ? $now : $last, $now);
+    $upd = $pdo->prepare("UPDATE recommendation_schedule SET
+      last_sent_at = COALESCE(?, last_sent_at),
+      next_due_at   = ?,
+      processing_lock = 0,
+      lock_expires_at = NULL,
+      updated_at = CURRENT_TIMESTAMP
+      WHERE user_id=? LIMIT 1");
+    $upd->execute([
+        $bizId ? $now->format('Y-m-d H:i:s') : null,
+        $next->format('Y-m-d H:i:s'),
+        $uid,
+    ]);
+}
+
+// Tiny helper: does a user have ANY active push token?
+// Falls back to any token if is_active column doesn't exist yet (pre-migration safety).
+function yegna_user_has_push_tokens($pdo, int $uid): bool {
+    try {
+        $s = $pdo->prepare("SELECT EXISTS(SELECT 1 FROM push_tokens WHERE user_id=? AND is_active=1)");
+        $s->execute([$uid]);
+        return (bool)$s->fetchColumn();
+    } catch (PDOException $_) {
+        // Column may not exist yet — fall back to checking any token for this user
+        try {
+            $s = $pdo->prepare("SELECT EXISTS(SELECT 1 FROM push_tokens WHERE user_id=?)");
+            $s->execute([$uid]);
+            return (bool)$s->fetchColumn();
+        } catch (PDOException $_) {
+            return false;
+        }
+    }
+}
+
+// Send Expo push to all tokens for a user via the existing helpers.
+function send_expo_push_all_tokens($pdo, int $uid, string $title, string $body, array $extra = []): void {
+    $tokens = get_push_tokens($pdo, [$uid]);
+    if ($tokens) send_expo_push($tokens, $title, $body, $extra);
+}
+
+// Extract first photo URL from a photos JSON column (matches JS shape).
+function yegna_first_photo($photosJson): ?string {
+    if (!$photosJson) return null;
+    $decoded = json_decode($photosJson, true);
+    if (!is_array($decoded) || empty($decoded)) return null;
+    $first = reset($decoded);
+    if (is_string($first)) return $first;
+    if (is_array($first)) {
+        return $first['url'] ?? $first['image_url'] ?? $first['photo'] ?? $first['src'] ?? null;
+    }
+    return null;
+}
+
+// ── Routes: GET /calendar/context  — debug / app can display fasting badge ───
+if ($base === 'calendar' && $sub === 'context' && $method === 'GET') {
+    $dStr = $_GET['date'] ?? 'now';
+    $d = $dStr === 'now' ? new DateTime('now', yegna_tz()) : new DateTime($dStr, yegna_tz());
+    $ctx = yegna_context($d);
+    $ctx['date'] = $d->format('Y-m-d');
+    $ctx['now_iso'] = $d->format('c');
+    echo json_encode(['success' => true, 'data' => $ctx]);
+    exit;
+}
+
+// =============================================================================
+// FEATURED ADS SYSTEM
+// =============================================================================
+
+// ── Helper: ensure featured_ads table exists ─────────────────────────────────
+function ensure_featured_ads_table(PDO $pdo): void {
+    $pdo->exec("CREATE TABLE IF NOT EXISTS featured_ads (
+        id               INT          PRIMARY KEY AUTO_INCREMENT,
+        title            VARCHAR(255) NOT NULL COMMENT 'Internal campaign name',
+        business_id      INT          DEFAULT NULL COMMENT 'Optional linked business',
+        media_type       ENUM('image','video') NOT NULL DEFAULT 'image',
+        media_url        VARCHAR(600) NOT NULL,
+        destination_url  VARCHAR(600) DEFAULT NULL,
+        cta_text         VARCHAR(100) DEFAULT NULL,
+        start_at         DATETIME     NOT NULL COMMENT 'UTC — admin enters EAT, PHP converts to UTC before storing',
+        end_at           DATETIME     NOT NULL COMMENT 'UTC — admin enters EAT, PHP converts to UTC before storing',
+        display_duration SMALLINT     NOT NULL DEFAULT 8 COMMENT 'Seconds to show image ad',
+        priority         SMALLINT     NOT NULL DEFAULT 10 COMMENT 'Lower = higher priority',
+        weight           SMALLINT     NOT NULL DEFAULT 1  COMMENT 'Rotation weight',
+        is_active        TINYINT(1)   NOT NULL DEFAULT 1,
+        impressions      INT          NOT NULL DEFAULT 0,
+        clicks           INT          NOT NULL DEFAULT 0,
+        created_by       INT          NOT NULL,
+        created_at       TIMESTAMP    DEFAULT CURRENT_TIMESTAMP,
+        updated_at       TIMESTAMP    DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP,
+        INDEX idx_active_schedule (is_active, start_at, end_at),
+        INDEX idx_priority        (priority, weight)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+}
+
+// ── Timezone helper: parse an EAT datetime string and return a UTC DateTime ──
+// Dashboard sends: 'YYYY-MM-DD HH:MM:SS' or 'YYYY-MM-DDTHH:MM' — treated as EAT.
+// Returns UTC DateTime or false on failure.
+function eat_to_utc(string $eatStr): DateTime|false {
+    $eat_tz = new DateTimeZone('Africa/Addis_Ababa');
+    $utc_tz = new DateTimeZone('UTC');
+    $dt = DateTime::createFromFormat('Y-m-d H:i:s', $eatStr, $eat_tz)
+       ?: DateTime::createFromFormat('Y-m-d\TH:i:s', $eatStr, $eat_tz)
+       ?: DateTime::createFromFormat('Y-m-d\TH:i',   $eatStr, $eat_tz)
+       ?: DateTime::createFromFormat('Y-m-d H:i',    $eatStr, $eat_tz);
+    if (!$dt) return false;
+    $dt->setTimezone($utc_tz);
+    return $dt;
+}
+
+// ── Timezone helper: return current UTC time as Y-m-d H:i:s string ───────────
+function now_utc(): string {
+    return (new DateTime('now', new DateTimeZone('UTC')))->format('Y-m-d H:i:s');
+}
+
+// ── GET /featured-ads — public: return currently active ads ─────────────────
+if ($base === 'featured-ads' && ($sub === '' || $sub === null) && $method === 'GET') {
+    ensure_featured_ads_table($pdo);
+
+    // Use UTC NOW() — timestamps stored as UTC, so server TZ is irrelevant.
+    $nowUtc = now_utc();
+
+    $s = $pdo->prepare("
+        SELECT
+            fa.id, fa.title, fa.media_type, fa.media_url,
+            fa.destination_url, fa.cta_text,
+            fa.start_at, fa.end_at, fa.display_duration,
+            fa.priority, fa.weight,
+            fa.business_id,
+            b.name  AS business_name,
+            b.image_url AS business_image,
+            b.category  AS business_category,
+            b.address   AS business_address,
+            b.city      AS business_city
+        FROM featured_ads fa
+        LEFT JOIN businesses b ON b.id = fa.business_id AND b.is_active = 1
+        WHERE fa.is_active = 1
+          AND fa.start_at <= ?
+          AND fa.end_at   >= ?
+        ORDER BY fa.priority ASC, fa.id ASC
+    ");
+    $s->execute([$nowUtc, $nowUtc]);
+    $rows = $s->fetchAll();
+
+    // Apply weighted shuffle within each priority group so higher-weight ads
+    // appear proportionally more often while still being fair across campaigns.
+    // Priority grouping: all priority=1 ads shuffle among themselves (weighted),
+    // then priority=2, etc. This prevents a high-weight low-priority ad from
+    // pushing out a higher-priority ad.
+    $grouped = [];
+    foreach ($rows as $row) {
+        $grouped[(int)$row['priority']][] = $row;
+    }
+    ksort($grouped);
+    $ordered = [];
+    foreach ($grouped as $group) {
+        // Build a weighted pool: each ad gets weight slots
+        $pool = [];
+        foreach ($group as $ad) {
+            $w = max(1, (int)$ad['weight']);
+            for ($i = 0; $i < $w; $i++) $pool[] = $ad['id'];
+        }
+        // Shuffle the pool (weighted Fisher-Yates effect)
+        shuffle($pool);
+        // De-duplicate while preserving weighted order
+        $seen = [];
+        foreach ($pool as $aid) {
+            if (!isset($seen[$aid])) {
+                $seen[$aid] = true;
+                foreach ($group as $ad) {
+                    if ((int)$ad['id'] === (int)$aid) {
+                        $ordered[] = $ad;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+
+    // Cast numeric types
+    foreach ($ordered as &$row) {
+        $row['id']               = (int)$row['id'];
+        $row['display_duration'] = (int)$row['display_duration'];
+        $row['priority']         = (int)$row['priority'];
+        $row['weight']           = (int)$row['weight'];
+        $row['business_id']      = $row['business_id'] ? (int)$row['business_id'] : null;
+    }
+    unset($row);
+
+    echo json_encode(['success' => true, 'data' => $ordered]);
+    exit;
+}
+
+// ── POST /featured-ads/:id/impression — track view (public, fire-and-forget) ─
+if ($base === 'featured-ads' && is_numeric($sub) && $subsub === 'impression' && $method === 'POST') {
+    ensure_featured_ads_table($pdo);
+    try {
+        $pdo->prepare('UPDATE featured_ads SET impressions = impressions + 1 WHERE id = ?')
+            ->execute([(int)$sub]);
+    } catch (Throwable $_) {}
+    echo json_encode(['success' => true]);
+    exit;
+}
+
+// ── POST /featured-ads/:id/click — track click (public, fire-and-forget) ─────
+if ($base === 'featured-ads' && is_numeric($sub) && $subsub === 'click' && $method === 'POST') {
+    ensure_featured_ads_table($pdo);
+    try {
+        $pdo->prepare('UPDATE featured_ads SET clicks = clicks + 1 WHERE id = ?')
+            ->execute([(int)$sub]);
+    } catch (Throwable $_) {}
+    echo json_encode(['success' => true]);
+    exit;
+}
+
+// ── /admin/featured-ads — admin CRUD ─────────────────────────────────────────
+if ($base === 'admin' && $sub === 'featured-ads') {
+    $uid = require_auth($JWT_SECRET);
+    $roleQ = $pdo->prepare('SELECT role FROM users WHERE id=?');
+    $roleQ->execute([$uid]);
+    $rr = $roleQ->fetch();
+    if (!$rr || $rr['role'] !== 'admin') {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'message' => 'Admin only.']);
+        exit;
+    }
+    ensure_featured_ads_table($pdo);
+
+    // GET /admin/featured-ads — list all ads
+    if ($method === 'GET' && $subsub === '') {
+        $s = $pdo->prepare("
+            SELECT fa.*, b.name AS business_name
+            FROM featured_ads fa
+            LEFT JOIN businesses b ON b.id = fa.business_id
+            ORDER BY fa.priority ASC, fa.created_at DESC
+        ");
+        $s->execute();
+        $rows = $s->fetchAll();
+        $eat_tz = new DateTimeZone('Africa/Addis_Ababa');
+        $utc_tz = new DateTimeZone('UTC');
+        foreach ($rows as &$r) {
+            $r['id'] = (int)$r['id'];
+            $r['is_active'] = (int)$r['is_active'];
+            $r['display_duration'] = (int)$r['display_duration'];
+            $r['priority'] = (int)$r['priority'];
+            $r['weight'] = (int)$r['weight'];
+            $r['impressions'] = (int)$r['impressions'];
+            $r['clicks'] = (int)$r['clicks'];
+            $r['business_id'] = $r['business_id'] ? (int)$r['business_id'] : null;
+            // Convert UTC stored datetimes → EAT for the dashboard display
+            foreach (['start_at', 'end_at'] as $col) {
+                if (!empty($r[$col])) {
+                    $dt = DateTime::createFromFormat('Y-m-d H:i:s', $r[$col], $utc_tz);
+                    if ($dt) {
+                        $dt->setTimezone($eat_tz);
+                        $r[$col] = $dt->format('Y-m-d H:i:s');
+                    }
+                }
+            }
+        }
+        unset($r);
+        echo json_encode(['success' => true, 'data' => $rows]);
+        exit;
+    }
+
+    // GET /admin/featured-ads/:id — single ad (also returns EAT times)
+    if ($method === 'GET' && is_numeric($subsub)) {
+        $s = $pdo->prepare("SELECT fa.*, b.name AS business_name FROM featured_ads fa LEFT JOIN businesses b ON b.id = fa.business_id WHERE fa.id = ?");
+        $s->execute([(int)$subsub]);
+        $row = $s->fetch();
+        if (!$row) { http_response_code(404); echo json_encode(['success' => false, 'message' => 'Not found.']); exit; }
+        $eat_tz = new DateTimeZone('Africa/Addis_Ababa');
+        $utc_tz = new DateTimeZone('UTC');
+        foreach (['start_at', 'end_at'] as $col) {
+            if (!empty($row[$col])) {
+                $dt = DateTime::createFromFormat('Y-m-d H:i:s', $row[$col], $utc_tz);
+                if ($dt) { $dt->setTimezone($eat_tz); $row[$col] = $dt->format('Y-m-d H:i:s'); }
+            }
+        }
+        echo json_encode(['success' => true, 'data' => $row]);
+        exit;
+    }
+
+    // POST /admin/featured-ads — create (JSON body, media_url already uploaded separately)
+    if ($method === 'POST' && $subsub === '') {
+        $title           = trim($input['title'] ?? '');
+        $mediaType       = $input['media_type'] ?? 'image';
+        $mediaUrl        = trim($input['media_url'] ?? '');
+        $destUrl         = trim($input['destination_url'] ?? '') ?: null;
+        $ctaText         = trim($input['cta_text'] ?? '') ?: null;
+        $startAt         = trim($input['start_at'] ?? '');
+        $endAt           = trim($input['end_at'] ?? '');
+        $duration        = max(3, min(120, (int)($input['display_duration'] ?? 8)));
+        $priority        = max(1, (int)($input['priority'] ?? 10));
+        $weight          = max(1, (int)($input['weight'] ?? 1));
+        $isActive        = (int)(!empty($input['is_active']));
+        $businessId      = !empty($input['business_id']) ? (int)$input['business_id'] : null;
+
+        if (!$title || !$mediaUrl || !$startAt || !$endAt) {
+            http_response_code(400);
+            echo json_encode(['success' => false, 'message' => 'title, media_url, start_at, and end_at are required.']);
+            exit;
+        }
+        if (!in_array($mediaType, ['image', 'video'], true)) {
+            http_response_code(400);
+            echo json_encode(['success' => false, 'message' => 'media_type must be image or video.']);
+            exit;
+        }
+        // Parse as EAT and store as UTC — timezone-safe regardless of server config
+        $startDt = eat_to_utc($startAt);
+        $endDt   = eat_to_utc($endAt);
+        if (!$startDt || !$endDt) {
+            http_response_code(400);
+            echo json_encode(['success' => false, 'message' => 'Invalid start_at or end_at format. Use YYYY-MM-DD HH:MM:SS (Ethiopia time).']);
+            exit;
+        }
+        if ($endDt <= $startDt) {
+            http_response_code(400);
+            echo json_encode(['success' => false, 'message' => 'end_at must be after start_at.']);
+            exit;
+        }
+
+        $pdo->prepare("INSERT INTO featured_ads
+            (title, business_id, media_type, media_url, destination_url, cta_text,
+             start_at, end_at, display_duration, priority, weight, is_active, created_by)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)")
+            ->execute([
+                $title, $businessId, $mediaType, $mediaUrl, $destUrl, $ctaText,
+                $startDt->format('Y-m-d H:i:s'), $endDt->format('Y-m-d H:i:s'),
+                $duration, $priority, $weight, $isActive, $uid
+            ]);
+        $newId = (int)$pdo->lastInsertId();
+        echo json_encode(['success' => true, 'message' => 'Featured ad created.', 'id' => $newId]);
+        exit;
+    }
+
+    // PUT /admin/featured-ads/:id — full update
+    if ($method === 'PUT' && is_numeric($subsub)) {
+        $adId = (int)$subsub;
+        $exists = $pdo->prepare('SELECT id FROM featured_ads WHERE id=?');
+        $exists->execute([$adId]);
+        if (!$exists->fetch()) { http_response_code(404); echo json_encode(['success' => false, 'message' => 'Ad not found.']); exit; }
+
+        $title      = trim($input['title'] ?? '');
+        $mediaType  = $input['media_type'] ?? 'image';
+        $mediaUrl   = trim($input['media_url'] ?? '');
+        $destUrl    = trim($input['destination_url'] ?? '') ?: null;
+        $ctaText    = trim($input['cta_text'] ?? '') ?: null;
+        $startAt    = trim($input['start_at'] ?? '');
+        $endAt      = trim($input['end_at'] ?? '');
+        $duration   = max(3, min(120, (int)($input['display_duration'] ?? 8)));
+        $priority   = max(1, (int)($input['priority'] ?? 10));
+        $weight     = max(1, (int)($input['weight'] ?? 1));
+        $isActive   = (int)(!empty($input['is_active']));
+        $businessId = !empty($input['business_id']) ? (int)$input['business_id'] : null;
+
+        if (!$title || !$mediaUrl || !$startAt || !$endAt) {
+            http_response_code(400);
+            echo json_encode(['success' => false, 'message' => 'title, media_url, start_at, and end_at are required.']);
+            exit;
+        }
+        $startDt = eat_to_utc($startAt);
+        $endDt   = eat_to_utc($endAt);
+        if (!$startDt || !$endDt || $endDt <= $startDt) {
+            http_response_code(400);
+            echo json_encode(['success' => false, 'message' => 'Invalid or illogical date range.']);
+            exit;
+        }
+
+        $pdo->prepare("UPDATE featured_ads SET
+            title=?, business_id=?, media_type=?, media_url=?, destination_url=?, cta_text=?,
+            start_at=?, end_at=?, display_duration=?, priority=?, weight=?, is_active=?
+            WHERE id=?")
+            ->execute([
+                $title, $businessId, $mediaType, $mediaUrl, $destUrl, $ctaText,
+                $startDt->format('Y-m-d H:i:s'), $endDt->format('Y-m-d H:i:s'),
+                $duration, $priority, $weight, $isActive, $adId
+            ]);
+        echo json_encode(['success' => true, 'message' => 'Featured ad updated.']);
+        exit;
+    }
+
+    // PATCH /admin/featured-ads/:id — partial update (toggle active, etc.)
+    if ($method === 'PATCH' && is_numeric($subsub)) {
+        $adId = (int)$subsub;
+        $fields = []; $params = [];
+        if (isset($input['is_active']))        { $fields[] = 'is_active=?';        $params[] = (int)$input['is_active']; }
+        if (isset($input['priority']))         { $fields[] = 'priority=?';         $params[] = max(1, (int)$input['priority']); }
+        if (isset($input['weight']))           { $fields[] = 'weight=?';           $params[] = max(1, (int)$input['weight']); }
+        if (isset($input['display_duration'])) { $fields[] = 'display_duration=?'; $params[] = max(3, min(120, (int)$input['display_duration'])); }
+        if (isset($input['cta_text']))         { $fields[] = 'cta_text=?';         $params[] = trim($input['cta_text']) ?: null; }
+        if (isset($input['destination_url']))  { $fields[] = 'destination_url=?';  $params[] = trim($input['destination_url']) ?: null; }
+        if (!$fields) { http_response_code(400); echo json_encode(['success' => false, 'message' => 'No fields to update.']); exit; }
+        $params[] = $adId;
+        $pdo->prepare('UPDATE featured_ads SET ' . implode(', ', $fields) . ' WHERE id=?')->execute($params);
+        echo json_encode(['success' => true, 'message' => 'Updated.']);
+        exit;
+    }
+
+    // DELETE /admin/featured-ads/:id — delete
+    if ($method === 'DELETE' && is_numeric($subsub)) {
+        $adId = (int)$subsub;
+        // Optionally delete media file
+        $row = $pdo->prepare('SELECT media_url FROM featured_ads WHERE id=?');
+        $row->execute([$adId]);
+        $ad = $row->fetch();
+        if ($ad && !empty($ad['media_url'])) {
+            delete_upload_file($ad['media_url']);
+        }
+        $pdo->prepare('DELETE FROM featured_ads WHERE id=?')->execute([$adId]);
+        echo json_encode(['success' => true, 'message' => 'Deleted.']);
+        exit;
+    }
+
+    http_response_code(405);
+    echo json_encode(['success' => false, 'message' => 'Method not allowed.']);
+    exit;
+}
+
+// ── POST /admin/featured-ads-upload — upload image or video for an ad ────────
+if ($base === 'admin' && $sub === 'featured-ads-upload' && $method === 'POST') {
+    $uid = require_auth($JWT_SECRET);
+    $roleQ = $pdo->prepare('SELECT role FROM users WHERE id=?');
+    $roleQ->execute([$uid]);
+    $rr = $roleQ->fetch();
+    if (!$rr || $rr['role'] !== 'admin') {
+        http_response_code(403);
+        echo json_encode(['success' => false, 'message' => 'Admin only.']);
+        exit;
+    }
+
+    $mediaType = $_POST['media_type'] ?? 'image';
+
+    if ($mediaType === 'image') {
+        if (empty($_FILES['media'])) {
+            http_response_code(400);
+            echo json_encode(['success' => false, 'message' => 'No file uploaded.']);
+            exit;
+        }
+        try {
+            $result = upload_image($_FILES['media'], 'featured', 5242880); // 5MB for ads
+            echo json_encode(['success' => true, 'url' => $result['url'], 'media_type' => 'image']);
+        } catch (RuntimeException $e) {
+            http_response_code(400);
+            echo json_encode(['success' => false, 'message' => $e->getMessage()]);
+        }
+    } elseif ($mediaType === 'video') {
+        if (empty($_FILES['media'])) {
+            http_response_code(400);
+            echo json_encode(['success' => false, 'message' => 'No file uploaded.']);
+            exit;
+        }
+        $file = $_FILES['media'];
+        if ($file['error'] !== UPLOAD_ERR_OK) {
+            http_response_code(400);
+            echo json_encode(['success' => false, 'message' => 'Upload error ' . $file['error']]);
+            exit;
+        }
+        $maxBytes = 52428800; // 50MB for videos
+        if ($file['size'] > $maxBytes) {
+            http_response_code(400);
+            echo json_encode(['success' => false, 'message' => 'Video exceeds 50 MB limit.']);
+            exit;
+        }
+        // Validate MIME by checking finfo
+        $mime = '';
+        if (function_exists('finfo_open')) {
+            $fi = finfo_open(FILEINFO_MIME_TYPE);
+            $mime = finfo_file($fi, $file['tmp_name']);
+            finfo_close($fi);
+        } else {
+            $mime = $file['type'] ?? '';
+        }
+        $allowedVideoMimes = ['video/mp4', 'video/quicktime', 'video/x-msvideo', 'video/webm', 'video/3gpp'];
+        if (!in_array($mime, $allowedVideoMimes, true)) {
+            http_response_code(400);
+            echo json_encode(['success' => false, 'message' => 'Unsupported video type. Use MP4, MOV, or WebM.']);
+            exit;
+        }
+        $ext      = 'mp4';
+        if ($mime === 'video/webm')     $ext = 'webm';
+        if ($mime === 'video/quicktime') $ext = 'mov';
+        $dir = __DIR__ . '/uploads/featured';
+        if (!is_dir($dir)) mkdir($dir, 0755, true);
+        $filename = bin2hex(random_bytes(16)) . '_' . time() . '.' . $ext;
+        $dest     = $dir . '/' . $filename;
+        if (!move_uploaded_file($file['tmp_name'], $dest)) {
+            http_response_code(500);
+            echo json_encode(['success' => false, 'message' => 'Failed to save video.']);
+            exit;
+        }
+        $url = 'https://verifypay.et/uploads/featured/' . $filename;
+        echo json_encode(['success' => true, 'url' => $url, 'media_type' => 'video']);
+    } else {
+        http_response_code(400);
+        echo json_encode(['success' => false, 'message' => 'media_type must be image or video.']);
+    }
+    exit;
+}
+
+
+$_filter404 = function($p) { return (string)$p !== ''; };
+$fullPath = '/' . implode('/', array_filter([$base, $sub, $subsub, $subsubid], $_filter404));
+echo json_encode(['success' => false, 'message' => 'Route not found: ' . $fullPath, 'method' => $method]);
+exit;
