@@ -373,7 +373,7 @@ function delete_upload_file(string $url): void {
 // ── HEALTH ────────────────────────────────────────────────────────────────────
 if ($base === 'health' || $base === '') {
     $gdOk = function_exists('imagecreatefromjpeg') && function_exists('imagejpeg');
-    echo json_encode(['status' => 'OK', 'timestamp' => date('c'), 'version' => '2.0.0', 'db' => 'connected', 'gd' => $gdOk ? 'enabled' : 'disabled', 'debug' => ['base' => $base, 'sub' => $sub, 'subsub' => $subsub, 'uri' => $_SERVER['REQUEST_URI']]]);
+    echo json_encode(['status' => 'OK', 'timestamp' => date('c'), 'version' => '2.0.0', 'db' => 'connected', 'gd' => $gdOk ? 'enabled' : 'disabled']);
     exit;
 }
 
@@ -639,7 +639,8 @@ if ($base === 'businesses') {
             $total = (int)$cnt->fetchColumn();
             echo json_encode(['success' => true, 'data' => $rows, 'total' => $total, 'distribution' => []]);
         } catch (PDOException $e) {
-            echo json_encode(['success' => true, 'data' => [], 'total' => 0, 'distribution' => [], '_err' => $e->getMessage()]);
+            // Do not expose SQL error details to clients
+            echo json_encode(['success' => true, 'data' => [], 'total' => 0, 'distribution' => []]);
         }
         exit;
     }
@@ -1083,12 +1084,14 @@ if ($base === 'social') {
     if ($sub === 'feed' && $method === 'GET') {
         $lim = max(1, min(50, (int)($_GET['limit'] ?? 20)));
         $off = max(0, (int)($_GET['offset'] ?? 0));
-        // Privacy enforcement for activity_visibility:
-        //   - 'everyone' → show to all followers
-        //   - 'friends'  → show only when viewer is a mutual follower of the poster
-        //   - 'only_me'  → never show to anyone else
-        // Per-post `visibility` column is ALSO checked (inner condition).
-        // Both must pass — the stricter of the two wins.
+        // Privacy enforcement — BOTH global setting and per-post visibility checked:
+        //   activity_visibility = everyone → visible to ALL authenticated users
+        //   activity_visibility = friends  → visible only to mutual followers
+        //   activity_visibility = only_me  → visible only to the owner
+        //   Per-post visibility also checked; stricter rule wins.
+        //
+        // Feed shows posts from people the viewer follows PLUS posts with
+        // activity_visibility=everyone from anyone (true public discovery).
         $s = $pdo->prepare("
             SELECT
               af.id, af.type, af.caption, af.rating, af.photo_count, af.created_at,
@@ -1101,36 +1104,41 @@ if ($base === 'social') {
             FROM activity_feed af
             JOIN users u      ON af.user_id     = u.id
             JOIN businesses b ON af.business_id = b.id
-            JOIN follows f    ON f.follower_id  = ? AND f.following_id = af.user_id
-            -- Global activity_visibility from user_privacy (LEFT JOIN — missing row = 'everyone')
+            -- LEFT JOIN so we can include non-followed public posts
+            LEFT JOIN follows f ON f.follower_id = ? AND f.following_id = af.user_id
             LEFT JOIN user_privacy up ON up.user_id = af.user_id
-            WHERE (
-              -- Per-post visibility
-              af.visibility = 'everyone'
-              OR (af.visibility = 'friends' AND (
-                SELECT COUNT(*) FROM follows f3
-                WHERE f3.follower_id = af.user_id AND f3.following_id = ?
-              ) > 0)
-            )
-            AND (
-              -- Global activity_visibility — 'only_me' blocks all other viewers
-              -- 'friends' requires mutual follow; 'everyone' or NULL allows all followers
-              COALESCE(up.activity_visibility, 'everyone') != 'only_me'
+            WHERE
+              -- Viewer cannot be the poster (own posts handled separately in profile)
+              af.user_id != ?
               AND (
-                COALESCE(up.activity_visibility, 'everyone') = 'everyone'
+                -- CASE 1: global = everyone AND per-post = everyone → fully public
+                (
+                  COALESCE(up.activity_visibility, 'everyone') = 'everyone'
+                  AND af.visibility = 'everyone'
+                )
+                -- CASE 2: global = everyone AND per-post = friends, viewer must follow
+                OR (
+                  COALESCE(up.activity_visibility, 'everyone') = 'everyone'
+                  AND af.visibility = 'friends'
+                  AND f.follower_id IS NOT NULL
+                  AND (SELECT COUNT(*) FROM follows f3 WHERE f3.follower_id = af.user_id AND f3.following_id = ?) > 0
+                )
+                -- CASE 3: global = friends, viewer must be mutual follower
                 OR (
                   COALESCE(up.activity_visibility, 'everyone') = 'friends'
+                  AND f.follower_id IS NOT NULL
+                  AND (SELECT COUNT(*) FROM follows f4 WHERE f4.follower_id = af.user_id AND f4.following_id = ?) > 0
                   AND (
-                    SELECT COUNT(*) FROM follows f4
-                    WHERE f4.follower_id = af.user_id AND f4.following_id = ?
-                  ) > 0
+                    af.visibility = 'everyone'
+                    OR (af.visibility = 'friends' AND (SELECT COUNT(*) FROM follows f5 WHERE f5.follower_id = af.user_id AND f5.following_id = ?) > 0)
+                  )
                 )
+                -- CASE 4: global = only_me → never shown to others (excluded by absence)
               )
-            )
             ORDER BY af.created_at DESC
             LIMIT ? OFFSET ?
         ");
-        $s->execute([$uid, $uid, $uid, $uid, $lim, $off]);
+        $s->execute([$uid, $uid, $uid, $uid, $uid, $uid, $lim, $off]);
         $rows = $s->fetchAll();
         echo json_encode(['success' => true, 'data' => $rows, 'count' => count($rows)]); exit;
     }
