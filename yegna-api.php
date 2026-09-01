@@ -556,10 +556,10 @@ if ($base === 'auth') {
 
         $google = json_decode($raw, true);
 
-        // Verify audience — must match our web client ID
-        $expectedAud = '1086676751996-8bh2ldf2o1mv58tusk44eqra2so8750k.apps.googleusercontent.com';
+        // Verify audience — must match our web client ID (project yegna-29420)
+        $expectedAud = '982440221997-lpodqff0221parm251dfu2umfnn5dmb3.apps.googleusercontent.com';
         $aud = $google['aud'] ?? '';
-        if ($aud !== $expectedAud && $aud !== '1086676751996') {
+        if ($aud !== $expectedAud && $aud !== '982440221997') {
             // Also accept if aud is a comma-separated list containing our client ID
             $audList = array_map('trim', explode(',', $aud));
             if (!in_array($expectedAud, $audList, true)) {
@@ -757,32 +757,158 @@ if ($base === 'businesses') {
         echo json_encode(['success' => true, 'message' => 'Review updated.']); exit;
     }
 
-    // POST /businesses/:id/reviews/:reviewId/helpful
+    // POST /businesses/:id/reviews/:reviewId/helpful — toggle helpful vote
     if (is_numeric($sub) && $subsub === 'reviews' && is_numeric($subsubid) && $method === 'POST') {
-        echo json_encode(['success' => true]); exit;
-    }
+        $bizId = (int)$sub;
+        $rid   = (int)$subsubid;
+        $authUid = get_auth_user_id($JWT_SECRET);
+        if (!$authUid) { http_response_code(401); echo json_encode(['success' => false, 'message' => 'Authentication required.']); exit; }
 
-    // POST /businesses/:id/reviews/:reviewId/report  
-    // (caught by the helpful handler above for now)
+        // Ensure vote table exists (graceful — no crash if migration not yet run)
+        try {
+            $pdo->exec("CREATE TABLE IF NOT EXISTS review_helpful_votes (
+                id         INT       PRIMARY KEY AUTO_INCREMENT,
+                review_id  INT       NOT NULL,
+                user_id    INT       NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                UNIQUE KEY uq_review_user (review_id, user_id),
+                FOREIGN KEY (review_id) REFERENCES reviews(id) ON DELETE CASCADE,
+                FOREIGN KEY (user_id)   REFERENCES users(id)   ON DELETE CASCADE,
+                INDEX idx_review (review_id),
+                INDEX idx_user   (user_id)
+            ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+        } catch (PDOException $_) {}
+
+        // Check whether review belongs to this business
+        $chk = $pdo->prepare('SELECT id FROM reviews WHERE id=? AND business_id=?');
+        $chk->execute([$rid, $bizId]);
+        if (!$chk->fetch()) { http_response_code(404); echo json_encode(['success' => false, 'message' => 'Review not found.']); exit; }
+
+        // A user cannot mark their own review as helpful
+        $owner = $pdo->prepare('SELECT user_id FROM reviews WHERE id=?');
+        $owner->execute([$rid]);
+        $ownerRow = $owner->fetch();
+        if ($ownerRow && (int)$ownerRow['user_id'] === $authUid) {
+            http_response_code(400);
+            echo json_encode(['success' => false, 'message' => 'You cannot mark your own review as helpful.']);
+            exit;
+        }
+
+        // Toggle: if already voted → remove; if not → add
+        $exists = $pdo->prepare('SELECT id FROM review_helpful_votes WHERE review_id=? AND user_id=?');
+        $exists->execute([$rid, $authUid]);
+        $alreadyVoted = (bool)$exists->fetch();
+
+        if ($alreadyVoted) {
+            // Remove vote
+            $pdo->prepare('DELETE FROM review_helpful_votes WHERE review_id=? AND user_id=?')
+                ->execute([$rid, $authUid]);
+            // Decrement count (floor at 0)
+            $pdo->prepare('UPDATE reviews SET helpful_count = GREATEST(0, helpful_count - 1) WHERE id=?')
+                ->execute([$rid]);
+            $action = 'removed';
+        } else {
+            // Add vote
+            try {
+                $pdo->prepare('INSERT INTO review_helpful_votes (review_id, user_id) VALUES (?,?)')
+                    ->execute([$rid, $authUid]);
+                $pdo->prepare('UPDATE reviews SET helpful_count = helpful_count + 1 WHERE id=?')
+                    ->execute([$rid]);
+            } catch (PDOException $e) {
+                // Race condition: duplicate insert — already voted, treat as no-op
+                $action = 'no_change';
+                $cnt = $pdo->prepare('SELECT helpful_count FROM reviews WHERE id=?');
+                $cnt->execute([$rid]);
+                $row = $cnt->fetch();
+                echo json_encode(['success' => true, 'action' => 'no_change', 'helpful_count' => (int)($row['helpful_count'] ?? 0), 'marked' => true]);
+                exit;
+            }
+            $action = 'added';
+        }
+
+        // Return updated count
+        $cnt = $pdo->prepare('SELECT helpful_count FROM reviews WHERE id=?');
+        $cnt->execute([$rid]);
+        $row = $cnt->fetch();
+        echo json_encode([
+            'success'       => true,
+            'action'        => $action,
+            'helpful_count' => (int)($row['helpful_count'] ?? 0),
+            'marked'        => $action === 'added',
+        ]);
+        exit;
+    }
 
     // GET /businesses/:id/reviews
     if (is_numeric($sub) && $subsub === 'reviews' && $method === 'GET' && $subsubid === '') {
-        $bizId = (int)$sub;
-        $lim = max(1, (int)($_GET['limit'] ?? 20));
-        $off = max(0, (int)($_GET['offset'] ?? 0));
+        $bizId   = (int)$sub;
+        $lim     = max(1, (int)($_GET['limit'] ?? 20));
+        $off     = max(0, (int)($_GET['offset'] ?? 0));
+        $viewerId = get_auth_user_id($JWT_SECRET); // null if unauthenticated
         try {
-            // Use string interpolation for LIMIT/OFFSET — PDO binds them as strings which breaks MySQL
-            $sql = 'SELECT r.id, r.business_id, r.user_id, r.rating, r.title, r.content, r.created_at, u.name as user_name, u.avatar_url FROM reviews r JOIN users u ON r.user_id=u.id WHERE r.business_id=? ORDER BY r.created_at DESC LIMIT ' . $lim . ' OFFSET ' . $off;
-            $s = $pdo->prepare($sql);
-            $s->execute([$bizId]);
+            if ($viewerId) {
+                // Return helpful_count + whether current viewer already voted
+                $sql = 'SELECT r.id, r.business_id, r.user_id, r.rating, r.title, r.content,
+                               r.created_at, r.helpful_count,
+                               u.name as user_name, u.avatar_url,
+                               (SELECT COUNT(*) FROM review_helpful_votes rhv
+                                WHERE rhv.review_id = r.id AND rhv.user_id = ?) AS user_marked_helpful
+                        FROM reviews r
+                        JOIN users u ON r.user_id = u.id
+                        WHERE r.business_id = ?
+                        ORDER BY r.created_at DESC
+                        LIMIT ' . $lim . ' OFFSET ' . $off;
+                $s = $pdo->prepare($sql);
+                $s->execute([$viewerId, $bizId]);
+            } else {
+                $sql = 'SELECT r.id, r.business_id, r.user_id, r.rating, r.title, r.content,
+                               r.created_at, r.helpful_count,
+                               u.name as user_name, u.avatar_url,
+                               0 AS user_marked_helpful
+                        FROM reviews r
+                        JOIN users u ON r.user_id = u.id
+                        WHERE r.business_id = ?
+                        ORDER BY r.created_at DESC
+                        LIMIT ' . $lim . ' OFFSET ' . $off;
+                $s = $pdo->prepare($sql);
+                $s->execute([$bizId]);
+            }
             $rows = $s->fetchAll();
+            // Cast types for the frontend
+            foreach ($rows as &$row) {
+                $row['helpful_count']       = (int)($row['helpful_count'] ?? 0);
+                $row['user_marked_helpful'] = (bool)$row['user_marked_helpful'];
+            }
+            unset($row);
             $cnt = $pdo->prepare('SELECT COUNT(*) FROM reviews WHERE business_id=?');
             $cnt->execute([$bizId]);
             $total = (int)$cnt->fetchColumn();
             echo json_encode(['success' => true, 'data' => $rows, 'total' => $total, 'distribution' => []]);
         } catch (PDOException $e) {
-            // Do not expose SQL error details to clients
-            echo json_encode(['success' => true, 'data' => [], 'total' => 0, 'distribution' => []]);
+            // Graceful fallback if review_helpful_votes table not yet migrated
+            $sql = 'SELECT r.id, r.business_id, r.user_id, r.rating, r.title, r.content,
+                           r.created_at, r.helpful_count,
+                           u.name as user_name, u.avatar_url,
+                           0 AS user_marked_helpful
+                    FROM reviews r
+                    JOIN users u ON r.user_id = u.id
+                    WHERE r.business_id = ?
+                    ORDER BY r.created_at DESC
+                    LIMIT ' . $lim . ' OFFSET ' . $off;
+            try {
+                $s = $pdo->prepare($sql); $s->execute([$bizId]);
+                $rows = $s->fetchAll();
+                foreach ($rows as &$row) {
+                    $row['helpful_count']       = (int)($row['helpful_count'] ?? 0);
+                    $row['user_marked_helpful'] = false;
+                }
+                unset($row);
+                $cnt = $pdo->prepare('SELECT COUNT(*) FROM reviews WHERE business_id=?');
+                $cnt->execute([$bizId]);
+                echo json_encode(['success' => true, 'data' => $rows, 'total' => (int)$cnt->fetchColumn(), 'distribution' => []]);
+            } catch (PDOException $_) {
+                echo json_encode(['success' => true, 'data' => [], 'total' => 0, 'distribution' => []]);
+            }
         }
         exit;
     }
