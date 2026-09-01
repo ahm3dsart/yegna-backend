@@ -489,6 +489,148 @@ if ($base === 'auth') {
         echo json_encode(['success' => true, 'user' => $user]);
         exit;
     }
+
+    // ── POST /auth/google ─────────────────────────────────────────────────────
+    // Step 1: client sends { idToken } — verify with Google, sign in or prompt username
+    // Step 2: client sends { pendingToken, username, birth_date } — create account
+    if ($sub === 'google' && $method === 'POST') {
+
+        // ── STEP 2: Complete signup — username provided ───────────────────────
+        if (!empty($input['pendingToken'])) {
+            $pending = jwt_decode($input['pendingToken'], $JWT_SECRET);
+            if (!$pending || ($pending['type'] ?? '') !== 'google_pending') {
+                http_response_code(400);
+                echo json_encode(['success' => false, 'message' => 'Session expired. Please sign in with Google again.']);
+                exit;
+            }
+            $username = trim($input['username'] ?? '');
+            $uErr = validate_username($username);
+            if ($uErr) { http_response_code(400); echo json_encode(['success' => false, 'message' => $uErr]); exit; }
+            if (username_exists($pdo, $username)) {
+                http_response_code(400);
+                echo json_encode(['success' => false, 'message' => 'Username is already taken.']);
+                exit;
+            }
+            // Create the user
+            $uid = create_user($pdo, [
+                'name'           => $pending['name'],
+                'email'          => $pending['email'],
+                'username'       => $username,
+                'google_id'      => $pending['google_id'],
+                'avatar_url'     => $pending['avatar_url'] ?? null,
+                'email_verified' => 1,
+                'birth_date'     => $input['birth_date'] ?? null,
+                'role'           => 'user',
+            ]);
+            $token   = jwt_encode(['id' => $uid], $JWT_SECRET);
+            $userRow = find_user_by_id($pdo, $uid);
+            echo json_encode(['success' => true, 'token' => $token, 'user' => $userRow]);
+            exit;
+        }
+
+        // ── STEP 1: Verify Google ID token ────────────────────────────────────
+        $idToken = trim($input['idToken'] ?? '');
+        if (!$idToken) {
+            http_response_code(400);
+            echo json_encode(['success' => false, 'message' => 'idToken is required.']);
+            exit;
+        }
+
+        // Verify with Google tokeninfo endpoint
+        $verifyUrl = 'https://oauth2.googleapis.com/tokeninfo?id_token=' . urlencode($idToken);
+        $ch = curl_init($verifyUrl);
+        curl_setopt_array($ch, [
+            CURLOPT_RETURNTRANSFER => true,
+            CURLOPT_TIMEOUT        => 10,
+            CURLOPT_SSL_VERIFYPEER => true,
+        ]);
+        $raw  = curl_exec($ch);
+        $http = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        curl_close($ch);
+
+        if (!$raw || $http !== 200) {
+            http_response_code(401);
+            echo json_encode(['success' => false, 'message' => 'Could not verify Google token. Please try again.']);
+            exit;
+        }
+
+        $google = json_decode($raw, true);
+
+        // Verify audience — must match our web client ID
+        $expectedAud = '1086676751996-8bh2ldf2o1mv58tusk44eqra2so8750k.apps.googleusercontent.com';
+        $aud = $google['aud'] ?? '';
+        if ($aud !== $expectedAud && $aud !== '1086676751996') {
+            // Also accept if aud is a comma-separated list containing our client ID
+            $audList = array_map('trim', explode(',', $aud));
+            if (!in_array($expectedAud, $audList, true)) {
+                http_response_code(401);
+                echo json_encode(['success' => false, 'message' => 'Invalid Google token audience.']);
+                exit;
+            }
+        }
+
+        $googleId  = $google['sub'] ?? '';
+        $email     = strtolower(trim($google['email'] ?? ''));
+        $name      = $google['name'] ?? $google['given_name'] ?? 'User';
+        $avatarUrl = $google['picture'] ?? null;
+
+        if (!$googleId || !$email) {
+            http_response_code(401);
+            echo json_encode(['success' => false, 'message' => 'Incomplete profile from Google.']);
+            exit;
+        }
+
+        // Look up by google_id first, then by email
+        $user = null;
+        try {
+            $gs = $pdo->prepare('SELECT * FROM users WHERE google_id=? LIMIT 1');
+            $gs->execute([$googleId]);
+            $user = $gs->fetch() ?: null;
+        } catch (PDOException $e) {}
+
+        if (!$user) {
+            $user = find_user_by_email($pdo, $email);
+            if ($user && empty($user['google_id'])) {
+                // Link Google ID to existing email account
+                try {
+                    $pdo->prepare('UPDATE users SET google_id=?, avatar_url=COALESCE(NULLIF(avatar_url,""),?) WHERE id=?')
+                        ->execute([$googleId, $avatarUrl, $user['id']]);
+                } catch (PDOException $e) {}
+                $user = find_user_by_id($pdo, $user['id']);
+            }
+        }
+
+        // ── Existing user — sign in ───────────────────────────────────────────
+        if ($user) {
+            $token   = jwt_encode(['id' => $user['id']], $JWT_SECRET);
+            $userRow = find_user_by_id($pdo, $user['id']);
+            echo json_encode(['success' => true, 'token' => $token, 'user' => $userRow]);
+            exit;
+        }
+
+        // ── New user — need username before creating account ──────────────────
+        // Issue a short-lived pending token carrying the Google profile (5 min)
+        $pendingToken = jwt_encode([
+            'type'       => 'google_pending',
+            'google_id'  => $googleId,
+            'email'      => $email,
+            'name'       => $name,
+            'avatar_url' => $avatarUrl,
+        ], $JWT_SECRET, 300); // 5 minute expiry
+
+        echo json_encode([
+            'success'      => true,
+            'needsUsername'=> true,
+            'pendingToken' => $pendingToken,
+            'googleData'   => [
+                'name'       => $name,
+                'email'      => $email,
+                'avatar_url' => $avatarUrl,
+                'birth_date' => null,
+            ],
+        ]);
+        exit;
+    }
 }
 
 // ── BUSINESSES ────────────────────────────────────────────────────────────────
