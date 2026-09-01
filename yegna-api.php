@@ -735,7 +735,8 @@ if ($base === 'user') {
             exit;
         }
         // ── JSON field update (no file) ───────────────────────────────────────
-        $allowed = ['name','email','phone','bio','avatar_url','username','birth_date','role'];
+        // NOTE: 'role' is intentionally excluded — role changes must go through admin routes only
+        $allowed = ['name','email','phone','bio','avatar_url','username','birth_date'];
         $sets = []; $vals = [];
         foreach ($allowed as $f) { if (isset($input[$f])) { $sets[] = "$f=?"; $vals[] = $input[$f]; } }
         if ($sets) { $vals[] = $uid; $pdo->prepare('UPDATE users SET '.implode(',',$sets).' WHERE id=?')->execute($vals); }
@@ -1449,15 +1450,15 @@ if ($base === 'social') {
             $followers   = $showFollowerCounts ? (int)$fc->fetch()['c'] : null;
             $following   = $showFollowerCounts ? (int)$ng->fetch()['c'] : null;
             $friends     = $showFollowerCounts ? (int)$fr->fetch()['c'] : null;
-            $reviewCount = $canSee($priv['reviews_visibility']) ? (int)$rc->fetch()['c'] : null;
+            // Reviews are always public — count is always returned
+            $reviewCount = (int)$rc->fetch()['c'];
 
-            // ── Activity data — apply per-category visibility ─────────────────
-            $reviews = []; $visited = [];
-            if ($canSee($priv['reviews_visibility'])) {
-                $rs = $pdo->prepare('SELECT r.*, b.name AS business_name FROM reviews r JOIN businesses b ON r.business_id = b.id WHERE r.user_id = ? ORDER BY r.created_at DESC LIMIT 20');
-                $rs->execute([$tid]);
-                $reviews = $rs->fetchAll();
-            }
+            // ── Activity data — reviews always public; visited applies visibility ──
+            $rs = $pdo->prepare('SELECT r.*, b.name AS business_name FROM reviews r JOIN businesses b ON r.business_id = b.id WHERE r.user_id = ? ORDER BY r.created_at DESC LIMIT 20');
+            $rs->execute([$tid]);
+            $reviews = $rs->fetchAll();
+
+            $visited = [];
             if ($canSee($priv['visited_visibility'])) {
                 $vs = $pdo->prepare('SELECT b.* FROM visits v JOIN businesses b ON v.business_id = b.id WHERE v.user_id = ? ORDER BY v.visited_at DESC LIMIT 20');
                 $vs->execute([$tid]);
@@ -1474,7 +1475,6 @@ if ($base === 'social') {
                 'is_following'          => $isFollowing,
                 'is_friend'             => $isFriend,
                 'profile_restricted'    => false,
-                'reviews_hidden'        => !$canSee($priv['reviews_visibility']),
                 'visited_hidden'        => !$canSee($priv['visited_visibility']),
                 'followers_hidden'      => !$showFollowerCounts,
                 'reviews'               => $reviews,
@@ -1736,37 +1736,7 @@ if ($base === 'admin') {
     }
 }
 
-// ── TEMPORARY DEBUG — remove after diagnosis ──────────────────────────────────
-if ($base === 'debug-reviews') {
-    header('Content-Type: application/json');
-    $bizId = (int)($_GET['biz'] ?? 9);
-    $results = [];
-    // Test 1: does the reviews table exist?
-    try {
-        $t = $pdo->query('SHOW TABLES LIKE "reviews"');
-        $results['table_exists'] = (bool)$t->fetch();
-    } catch (Exception $e) { $results['table_exists'] = 'error: ' . $e->getMessage(); }
-    // Test 2: what columns does it have?
-    try {
-        $c = $pdo->query('SHOW COLUMNS FROM reviews');
-        $results['columns'] = array_column($c->fetchAll(), 'Field');
-    } catch (Exception $e) { $results['columns'] = 'error: ' . $e->getMessage(); }
-    // Test 3: simple count
-    try {
-        $cnt = $pdo->prepare('SELECT COUNT(*) FROM reviews WHERE business_id=?');
-        $cnt->execute([$bizId]);
-        $results['count'] = (int)$cnt->fetchColumn();
-    } catch (Exception $e) { $results['count'] = 'error: ' . $e->getMessage(); }
-    // Test 4: the actual query we use
-    try {
-        $s = $pdo->prepare('SELECT r.id, r.business_id, r.user_id, r.rating, r.title, r.content, r.created_at, u.name as user_name, u.avatar_url FROM reviews r JOIN users u ON r.user_id=u.id WHERE r.business_id=? ORDER BY r.created_at DESC LIMIT 5 OFFSET 0');
-        $s->execute([$bizId]);
-        $results['query_ok'] = true;
-        $results['rows'] = $s->fetchAll();
-    } catch (Exception $e) { $results['query_ok'] = false; $results['query_error'] = $e->getMessage(); }
-    echo json_encode($results);
-    exit;
-}
+// ── TEMPORARY DEBUG — REMOVED (security: exposed schema without auth) ─────────
 /**
  * Send Expo push notifications to one or more device tokens.
  *
@@ -2208,22 +2178,7 @@ if ($base === 'admin' && $sub === 'stats' && $method === 'GET') {
     exit;
 }
 
-// ── TEMPORARY DEBUG — diagnose reviews 500 ───────────────────────────────────
-if ($base === 'debug-reviews') {
-    $bizId = (int)($_GET['biz'] ?? 9);
-    $out = [];
-    try { $t = $pdo->query('SHOW TABLES LIKE "reviews"'); $out['table'] = (bool)$t->fetch(); } catch(Exception $e) { $out['table'] = $e->getMessage(); }
-    try { $c = $pdo->query('SHOW COLUMNS FROM reviews'); $out['cols'] = array_column($c->fetchAll(), 'Field'); } catch(Exception $e) { $out['cols'] = $e->getMessage(); }
-    try { $cnt = $pdo->prepare('SELECT COUNT(*) FROM reviews WHERE business_id=?'); $cnt->execute([$bizId]); $out['count'] = (int)$cnt->fetchColumn(); } catch(Exception $e) { $out['count'] = $e->getMessage(); }
-    try {
-        $s = $pdo->prepare('SELECT r.id, r.rating, r.content, u.name as user_name FROM reviews r JOIN users u ON r.user_id=u.id WHERE r.business_id=? LIMIT 3');
-        $s->execute([$bizId]);
-        $out['rows'] = $s->fetchAll();
-    } catch(Exception $e) { $out['rows'] = $e->getMessage(); }
-    echo json_encode($out);
-    exit;
-}
-
+// ── TEMPORARY DEBUG — REMOVED (security: exposed schema without auth) ─────────
 // =============================================================================
 // RECOMMENDATION SYSTEM  —  Smart Food & Drink Recommendations
 // =============================================================================
